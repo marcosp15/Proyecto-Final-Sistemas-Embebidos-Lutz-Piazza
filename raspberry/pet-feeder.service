@@ -1,0 +1,18 @@
+[Unit]
+Description=Dispenser Automático de Alimento para Mascotas (I2C + Cámara + API Flask)
+After=network-online.target time-sync.target
+Wants=network-online.target time-sync.target
+
+[Service]
+Type=simple
+User=pi
+SupplementaryGroups=i2c video
+WorkingDirectory=/home/pi/Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/raspberry
+StateDirectory=pet-feeder
+ExecStart=/usr/bin/python3 /home/pi/Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/raspberry/run_service.py --bus 1 --addr 0x08 --db /var/lib/pet-feeder/feeder.db --media-dir /var/lib/pet-feeder/media --host 0.0.0.0 --port 5000
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target

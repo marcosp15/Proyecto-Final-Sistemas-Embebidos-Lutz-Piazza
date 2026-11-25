@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dispenser Automático de Alimento</title>
+  <style>
+    :root { --bg: #f5f6f8; --card: #fff; --border: #dcdfe4; --ink: #1f2937; --muted: #6b7280; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.4; }
+    main { max-width: 1080px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
+    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
+    h1 { margin: 0; font-size: 1.4rem; }
+    h2 { margin: 0 0 12px; font-size: 1.05rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+    section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
+    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
+    .stat { background: var(--bg); border-radius: 6px; padding: 8px 10px; font-size: 0.9rem; }
+    .stat strong { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
+    label { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--muted); gap: 4px; }
+    input, select, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); }
+    button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.secondary { background: #fff; color: var(--ink); border-color: var(--border); }
+    button.danger { background: var(--danger); border-color: var(--danger); }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
+    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+    th { color: var(--muted); font-weight: 600; }
+    #toast { min-height: 20px; font-size: 0.9rem; font-weight: 500; }
+    .ok { color: var(--ok); }
+    .err { color: var(--danger); }
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
+    .media-card { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); display: flex; flex-direction: column; }
+    .media-card img, .media-card video { width: 100%; height: 150px; object-fit: cover; background: #000; display: block; }
+    .media-meta { padding: 8px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; background: #e5e7eb; color: var(--ink); }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>Dispenser Automático de Alimento</h1>
+    <div id="toast" aria-live="polite"></div>
+  </header>
+
+  <!-- 1. Estado en vivo y controles -->
+  <section>
+    <h2>Estado en vivo y controles</h2>
+    <div class="grid" id="status-grid">
+      <div class="stat"><strong>Modo</strong><span id="st-mode">-</span></div>
+      <div class="stat"><strong>Arduino I2C</strong><span id="st-arduino">-</span></div>
+      <div class="stat"><strong>Motor / Pasos</strong><span id="st-motor">-</span></div>
+      <div class="stat"><strong>Sensor IR (vivo)</strong><span id="st-ir">-</span></div>
+      <div class="stat"><strong>Próximo horario</strong><span id="st-next">-</span></div>
+      <div class="stat"><strong>Cámara</strong><span id="st-camera">-</span></div>
+      <div class="stat"><strong>Hora servidor</strong><span id="st-time">-</span></div>
+    </div>
+    <div class="row" style="margin-top: 12px;">
+      <label style="flex-direction: row; align-items: center; gap: 6px;">
+        Porciones:
+        <input type="number" id="dispense-portions" min="1" max="10" value="1" style="width: 68px;">
+      </label>
+      <button id="btn-dispense">Dispensar ahora</button>
+      <button id="btn-unjam" class="secondary">Destrabar</button>
+      <button id="btn-stop" class="danger">Parada de emergencia</button>
+      <button id="btn-capture" class="secondary">Capturar ahora</button>
+      <button id="btn-mock-ir" class="secondary" style="display: none;">Simular IR (mock)</button>
+    </div>
+  </section>
+
+  <!-- 2. Configuración -->
+  <section>
+    <h2>Configuración</h2>
+    <form id="config-form">
+      <div class="grid">
+        <label>Pasos por porción (256..40960)
+          <input type="number" name="steps_per_portion" min="256" max="40960" required>
+        </label>
+        <label>Intervalo de paso µs (1000..10000)
+          <input type="number" name="step_interval_us" min="1000" max="10000" required>
+        </label>
+        <label>Modo de captura
+          <select name="capture_mode">
+            <option value="photo">Foto (JPEG)</option>
+            <option value="video">Video corto (MP4)</option>
+          </select>
+        </label>
+        <label>Duración video s (2..15)
+          <input type="number" name="video_duration_s" min="2" max="15" required>
+        </label>
+        <label>Cooldown IR s (5..600)
+          <input type="number" name="ir_cooldown_s" min="5" max="600" required>
+        </label>
+        <label>Máximo archivos media (10..500)
+          <input type="number" name="max_media_files" min="10" max="500" required>
+        </label>
+        <label>Modo intervalo habilitado
+          <select name="interval_enabled">
+            <option value="0">Desactivado</option>
+            <option value="1">Activado</option>
+          </select>
+        </label>
+        <label>Intervalo minutos (1..1440)
+          <input type="number" name="interval_minutes" min="1" max="1440" required>
+        </label>
+        <label>Porciones por intervalo (1..10)
+          <input type="number" name="interval_portions" min="1" max="10" required>
+        </label>
+      </div>
+      <div class="row" style="margin-top: 12px;">
+        <button type="submit">Guardar configuración</button>
+      </div>
+    </form>
+  </section>
+
+  <!-- 3. Horarios fijos -->
+  <section>
+    <h2>Horarios fijos</h2>
+    <form id="schedule-form" class="row" style="margin-bottom: 12px;">
+      <label>Hora (HH:MM)
+        <input type="time" id="sched-time" required>
+      </label>
+      <label>Porciones (1..10)
+        <input type="number" id="sched-portions" min="1" max="10" value="1" style="width: 80px;" required>
+      </label>
+      <button type="submit" style="align-self: flex-end;">Agregar horario</button>
+    </form>
+    <table>
+      <thead>
+        <tr><th>Hora</th><th>Porciones</th><th>Estado</th><th>Último disparo</th><th>Acciones</th></tr>
+      </thead>
+      <tbody id="schedules-body"></tbody>
+    </table>
+  </section>
+
+  <!-- 4. Historial reciente -->
+  <section>
+    <div class="row" style="justify-content: space-between;">
+      <h2 style="border: 0; margin: 0; padding: 0;">Historial de dispensados</h2>
+      <button id="btn-refresh-history" class="secondary">Actualizar</button>
+    </div>
+    <table style="margin-top: 8px;">
+      <thead>
+        <tr><th>Fecha / Hora</th><th>Origen</th><th>Porciones</th><th>Pasos</th><th>Estado</th><th>Detalle</th></tr>
+      </thead>
+      <tbody id="history-body"></tbody>
+    </table>
+  </section>
+
+  <!-- 5. Galería de medios -->
+  <section>
+    <div class="row" style="justify-content: space-between;">
+      <h2 style="border: 0; margin: 0; padding: 0;">Galería de fotos y videos</h2>
+      <div class="row">
+        <select id="media-filter">
+          <option value="">Todos</option>
+          <option value="photo">Fotos</option>
+          <option value="video">Videos</option>
+        </select>
+        <button id="btn-refresh-media" class="secondary">Actualizar</button>
+      </div>
+    </div>
+    <div class="gallery" id="media-gallery"></div>
+  </section>
+</main>
+
+<script>
+const toastEl = document.getElementById("toast");
+
+function notify(msg, isError = false) {
+  toastEl.textContent = msg;
+  toastEl.className = isError ? "err" : "ok";
+}
+
+async function api(path, options = {}) {
+  const opts = { headers: { "Content-Type": "application/json" }, ...options };
+  const res = await fetch(path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.error || `HTTP ${res.status}`);
+  }
+  return data;
+}
+
+async function refreshStatus() {
+  try {
+    const data = await api("/api/status");
+    const a = data.arduino;
+    const w = data.worker;
+    const c = data.camera;
+    document.getElementById("st-mode").textContent = data.mode;
+    document.getElementById("st-arduino").textContent = a.connected ? "Conectado" : "Desconectado";
+    document.getElementById("st-motor").textContent = a.motor_busy ? `Girando (${a.steps_remaining})` : "Libre";
+    document.getElementById("st-ir").textContent = a.ir_live ? "Presencia detectada" : "Sin presencia";
+    document.getElementById("st-next").textContent = w.next_schedule
+      ? `${w.next_schedule.time_hhmm} (${w.next_schedule.portions} porc.)`
+      : "Ninguno";
+    document.getElementById("st-camera").textContent = `${c.backend}${c.capturing ? " (capturando...)" : ""}`;
+    document.getElementById("st-time").textContent = data.server_time;
+    document.getElementById("btn-mock-ir").style.display = data.mode === "mock" ? "inline-block" : "none";
+  } catch (err) {
+    notify(`Error consultando estado: ${err.message}`, true);
+  }
+}
+
+async function loadConfig() {
+  try {
+    const { config } = await api("/api/config");
+    const form = document.getElementById("config-form");
+    for (const key of [
+      "steps_per_portion", "step_interval_us", "capture_mode", "video_duration_s",
+      "ir_cooldown_s", "max_media_files", "interval_minutes", "interval_portions"
+    ]) {
+      if (form.elements[key]) form.elements[key].value = config[key];
+    }
+    form.elements["interval_enabled"].value = config.interval_enabled ? "1" : "0";
+  } catch (err) {
+    notify(`Error cargando configuración: ${err.message}`, true);
+  }
+}
+
+async function loadSchedules() {
+  try {
+    const { schedules } = await api("/api/schedules");
+    const tbody = document.getElementById("schedules-body");
+    tbody.innerHTML = "";
+    if (!schedules.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 5;
+      td.textContent = "Sin horarios cargados.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    for (const s of schedules) {
+      const tr = document.createElement("tr");
+      const vals = [s.time_hhmm, String(s.portions), s.enabled ? "Activo" : "Pausado", s.last_triggered_date || "-"];
+      for (const v of vals) {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.appendChild(td);
+      }
+      const tdAct = document.createElement("td");
+      const btnToggle = document.createElement("button");
+      btnToggle.className = "secondary";
+      btnToggle.textContent = s.enabled ? "Desactivar" : "Activar";
+      btnToggle.onclick = async () => {
+        try {
+          await api(`/api/schedules/${s.id}`, { method: "PUT", body: JSON.stringify({ enabled: !s.enabled }) });
+          await loadSchedules();
+          await refreshStatus();
+          notify("Horario actualizado.");
+        } catch (err) { notify(err.message, true); }
+      };
+      const btnDel = document.createElement("button");
+      btnDel.className = "danger";
+      btnDel.style.marginLeft = "6px";
+      btnDel.textContent = "Eliminar";
+      btnDel.onclick = async () => {
+        try {
+          await api(`/api/schedules/${s.id}`, { method: "DELETE" });
+          await loadSchedules();
+          await refreshStatus();
+          notify("Horario eliminado.");
+        } catch (err) { notify(err.message, true); }
+      };
+      tdAct.append(btnToggle, btnDel);
+      tr.appendChild(tdAct);
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    notify(`Error cargando horarios: ${err.message}`, true);
+  }
+}
+
+async function loadHistory() {
+  try {
+    const { events } = await api("/api/history?limit=25");
+    const tbody = document.getElementById("history-body");
+    tbody.innerHTML = "";
+    if (!events.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = "Sin eventos registrados.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+    for (const ev of events) {
+      const tr = document.createElement("tr");
+      for (const v of [ev.timestamp, ev.source, String(ev.portions), String(ev.steps), ev.status, ev.detail || ""]) {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.appendChild(td);
+      }
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    notify(`Error cargando historial: ${err.message}`, true);
+  }
+}
+
+async function loadMedia() {
+  try {
+    const type = document.getElementById("media-filter").value;
+    const qs = type ? `?limit=50&type=${encodeURIComponent(type)}` : "?limit=50";
+    const { items } = await api(`/api/media${qs}`);
+    const gallery = document.getElementById("media-gallery");
+    gallery.innerHTML = "";
+    if (!items.length) {
+      const p = document.createElement("p");
+      p.textContent = "Sin capturas registradas.";
+      gallery.appendChild(p);
+      return;
+    }
+    for (const item of items) {
+      const card = document.createElement("div");
+      card.className = "media-card";
+      if (item.media_type === "video") {
+        const vid = document.createElement("video");
+        vid.src = item.url;
+        vid.controls = true;
+        vid.preload = "metadata";
+        card.appendChild(vid);
+      } else {
+        const img = document.createElement("img");
+        img.src = item.url;
+        img.alt = item.filename;
+        img.loading = "lazy";
+        card.appendChild(img);
+      }
+      const meta = document.createElement("div");
+      meta.className = "media-meta";
+      const info = document.createElement("div");
+      const ts = document.createElement("div");
+      ts.textContent = item.timestamp;
+      const badge = document.createElement("span");
+      badge.className = "badge";
+      badge.textContent = `${item.trigger} · ${item.media_type}`;
+      info.append(ts, badge);
+
+      const btnDel = document.createElement("button");
+      btnDel.className = "danger";
+      btnDel.textContent = "Borrar";
+      btnDel.onclick = async () => {
+        try {
+          await api(`/api/media/${item.id}`, { method: "DELETE" });
+          await loadMedia();
+          notify("Captura eliminada.");
+        } catch (err) { notify(err.message, true); }
+      };
+      meta.append(info, btnDel);
+      card.appendChild(meta);
+      gallery.appendChild(card);
+    }
+  } catch (err) {
+    notify(`Error cargando galería: ${err.message}`, true);
+  }
+}
+
+document.getElementById("btn-dispense").onclick = async () => {
+  const portions = parseInt(document.getElementById("dispense-portions").value, 10);
+  try {
+    const res = await api("/api/dispense", { method: "POST", body: JSON.stringify({ portions }) });
+    notify(`Dispensando ${res.steps} pasos (${res.portions} porc.).`);
+    refreshStatus();
+    loadHistory();
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("btn-unjam").onclick = async () => {
+  try {
+    const res = await api("/api/unjam", { method: "POST", body: JSON.stringify({}) });
+    notify(`Destrabe iniciado (${res.wiggle_steps} pasos).`);
+    refreshStatus();
+    loadHistory();
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("btn-stop").onclick = async () => {
+  try {
+    const res = await api("/api/stop", { method: "POST", body: JSON.stringify({}) });
+    notify(`Motor detenido (pasos cancelados: ${res.steps_cancelled}).`);
+    refreshStatus();
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("btn-capture").onclick = async () => {
+  try {
+    const res = await api("/api/media/capture", { method: "POST", body: JSON.stringify({}) });
+    notify(`Captura guardada: ${res.item.filename}`);
+    loadMedia();
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("btn-mock-ir").onclick = async () => {
+  try {
+    await api("/api/mock/ir", { method: "POST", body: JSON.stringify({}) });
+    notify("Detección IR simulada.");
+    setTimeout(() => { refreshStatus(); loadMedia(); }, 800);
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("config-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const payload = {
+    steps_per_portion: parseInt(f.steps_per_portion.value, 10),
+    step_interval_us: parseInt(f.step_interval_us.value, 10),
+    capture_mode: f.capture_mode.value,
+    video_duration_s: parseInt(f.video_duration_s.value, 10),
+    ir_cooldown_s: parseInt(f.ir_cooldown_s.value, 10),
+    max_media_files: parseInt(f.max_media_files.value, 10),
+    interval_enabled: f.interval_enabled.value === "1",
+    interval_minutes: parseInt(f.interval_minutes.value, 10),
+    interval_portions: parseInt(f.interval_portions.value, 10),
+  };
+  try {
+    const res = await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
+    notify(`Configuración guardada (Arduino sync: ${res.arduino_synced ? "sí" : "no"}).`);
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("schedule-form").onsubmit = async (e) => {
+  e.preventDefault();
+  const time_hhmm = document.getElementById("sched-time").value;
+  const portions = parseInt(document.getElementById("sched-portions").value, 10);
+  try {
+    await api("/api/schedules", { method: "POST", body: JSON.stringify({ time_hhmm, portions, enabled: true }) });
+    e.target.reset();
+    document.getElementById("sched-portions").value = "1";
+    await loadSchedules();
+    await refreshStatus();
+    notify(`Horario ${time_hhmm} agregado.`);
+  } catch (err) { notify(err.message, true); }
+};
+
+document.getElementById("btn-refresh-history").onclick = loadHistory;
+document.getElementById("btn-refresh-media").onclick = loadMedia;
+document.getElementById("media-filter").onchange = loadMedia;
+
+refreshStatus();
+loadConfig();
+loadSchedules();
+loadHistory();
+loadMedia();
+setInterval(refreshStatus, 3000);
+</script>
+</body>
+</html>
