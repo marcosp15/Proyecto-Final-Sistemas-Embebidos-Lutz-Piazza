@@ -1,0 +1,40 @@
+# PlatformIO
+.pio/
+.pioenvs/
+.piolibdeps/
+.cache/
+compile_commands.json
+.clangd/
+
+# VS Code (archivos generados localmente)
+.vscode/c_cpp_properties.json
+.vscode/launch.json
+.vscode/ipch/
+.vscode/.browse.c_cpp.db*
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+venv/
+.venv/
+env/
+
+# Base de datos, capturas de cámara y logs locales
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.log
+raspberry/media/
+media/
+
+# Sistema operativo y editores
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
