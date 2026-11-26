@@ -1,10 +1,12 @@
 """Contract 4 REST API tests (Flask test_client when installed + static route & index.html parity)."""
 
 import ast
+import importlib.util
 from pathlib import Path
 import re
 import sys
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -67,6 +69,7 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
             ("GET", "/api/status"),
             ("GET", "/api/config"),
             ("PUT", "/api/config"),
+            ("POST", "/api/config"),
             ("GET", "/api/schedules"),
             ("POST", "/api/schedules"),
             ("PUT", "/api/schedules/<int:schedule_id>"),
@@ -109,22 +112,61 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
                 f"index.html calls {method} {raw_url!r} (normalized {norm!r}) not found in api.py routes",
             )
 
-        # Config form fields in index.html must match database.DEFAULT_SETTINGS (all except last_interval_run_at)
-        expected_form_keys = set(db.DEFAULT_SETTINGS.keys()) - {"last_interval_run_at"}
+        # Redesigned UI exposes user-facing fields (turns_per_portion, schedule_mode, camera, interval)
+        # and intentionally hides step_interval_us and ir_cooldown_s (API-only).
+        expected_form_keys = {
+            "turns_per_portion",
+            "schedule_mode",
+            "interval_minutes",
+            "interval_portions",
+            "capture_mode",
+            "video_duration_s",
+            "max_media_files",
+        }
         form_names = set(re.findall(r'<(?:input|select)[^>]+name="([a-z0-9_]+)"', html))
         self.assertEqual(form_names, expected_form_keys)
+        self.assertNotIn("step_interval_us", html)
+        self.assertNotIn("ir_cooldown_s", html)
+        self.assertNotIn("Actualizar", html)
 
-        # Response fields referenced in index.html match Contract 4
+        # Layout & UX invariants
+        self.assertIn("body:not(.debug-mode) .debug-only", html)
+        self.assertIn('id="debug-toggle"', html)
+        self.assertIn("debugToggle.checked = false", html)
+        self.assertLess(html.index('id="btn-dispense"'), html.index('role="tablist"'))
+        for tab_label in (
+            "Configuración de porción",
+            "Configuración de cámara",
+            "Galería",
+            "Historial",
+        ):
+            self.assertIn(tab_label, html)
+        for mode_val in ('value="schedules"', 'value="interval"', 'value="manual"'):
+            self.assertIn(mode_val, html)
+        self.assertIn('min="0.5" max="10" step="0.5"', html)
+        self.assertNotIn("/ 2048", html)
+        self.assertIn("?download=1", html)
+        self.assertIn("input.disabled = isPhoto", html)
+        self.assertIn("field-disabled", html)
+        self.assertIn('<th class="debug-only">Pasos</th>', html)
+        self.assertIn("!v.paused", html)
+
+        # Response fields referenced in index.html match Contract 4 + redesigned API
         for token in (
             "data.mode",
+            "data.current_action",
             "a.connected",
             "a.motor_busy",
             "a.steps_remaining",
             "a.ir_live",
             "w.next_schedule",
+            "ns.mode",
+            "ns.interval_minutes",
             "c.backend",
             "c.capturing",
             "data.server_time",
+            "config.turns_per_portion",
+            "config.schedule_mode",
             "res.arduino_synced",
             "res.steps_cancelled",
             "res.wiggle_steps",
@@ -145,6 +187,172 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
         for flag in ("--bus", "--addr", "--db", "--media-dir", "--host", "--port"):
             self.assertIn(flag, unit)
             self.assertIn(flag, run_src)
+
+
+class TestApiRuntimeWithFlaskShim(unittest.TestCase):
+    """Executes api.create_app() handlers directly via a stdlib Flask shim (works even without flask)."""
+
+    @staticmethod
+    def _load_api_with_shim():
+        class _FakeResponse:
+            def __init__(self, data=None, directory=None, filename=None, as_attachment=False):
+                self.json_data = data
+                self.directory = directory
+                self.filename = filename
+                self.as_attachment = as_attachment
+                self.headers = {}
+
+        class _FakeRequest:
+            def __init__(self):
+                self.method = "GET"
+                self.args = {}
+                self._json = None
+
+            def get_json(self, silent=False):
+                return self._json
+
+        fake_req = _FakeRequest()
+
+        class _FakeFlask:
+            def __init__(self, _name):
+                self.routes = {}
+
+            def route(self, path, methods=None):
+                m_list = methods or ["GET"]
+
+                def deco(fn):
+                    for m in m_list:
+                        self.routes[(m, path)] = fn
+                    return fn
+
+                return deco
+
+        fake_flask = types.ModuleType("flask")
+        fake_flask.Flask = _FakeFlask
+        fake_flask.request = fake_req
+        fake_flask.jsonify = lambda payload: _FakeResponse(data=payload)
+        fake_flask.send_from_directory = (
+            lambda directory, filename, as_attachment=False: _FakeResponse(
+                directory=directory, filename=filename, as_attachment=as_attachment
+            )
+        )
+
+        api_file = RASPBERRY_DIR / "service" / "api.py"
+        spec = importlib.util.spec_from_file_location("_test_api_shim_mod", str(api_file))
+        mod = importlib.util.module_from_spec(spec)
+        with mock.patch.dict(sys.modules, {"flask": fake_flask}):
+            spec.loader.exec_module(mod)
+        return mod, fake_req
+
+    def setUp(self) -> None:
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmpdir.name)
+        self.db_path = str(self.root / "feeder.db")
+        self.media_dir = self.root / "media"
+        db.init_db(self.db_path)
+
+        self.clock_t = 100.0
+        self.transport = MockArduinoTransport(clock=lambda: self.clock_t)
+        self.master = FeederMaster(transport=self.transport, delay=0.0)
+        self.client = ThreadSafeFeederMaster(self.master)
+        self.camera = CameraManager(self.media_dir, mock=True)
+        self.worker = FeederWorkerThread(self.client, self.db_path, self.camera, poll_interval=0.5)
+        self.api_mod, self.req = self._load_api_with_shim()
+        self.app = self.api_mod.create_app(self.client, self.db_path, self.camera, worker=self.worker)
+
+    def tearDown(self) -> None:
+        self.worker.stop(wait_captures=True)
+        self._tmpdir.cleanup()
+
+    def _call(self, method: str, route: str, json_body=None, args=None, **kwargs):
+        self.req.method = method
+        self.req._json = json_body
+        self.req.args = dict(args or {})
+        res = self.app.routes[(method, route)](**kwargs)
+        if isinstance(res, tuple):
+            resp, code = res
+            return code, resp
+        return 200, res
+
+    def test_config_post_put_turns_per_portion_and_schedule_mode(self) -> None:
+        code, resp = self._call("GET", "/api/config")
+        self.assertEqual(code, 200)
+        cfg = resp.json_data["config"]
+        self.assertEqual(cfg["step_interval_us"], 1000)
+        self.assertEqual(cfg["turns_per_portion"], 1.0)
+        self.assertEqual(cfg["schedule_mode"], "schedules")
+
+        # PUT turns_per_portion=2.5 -> 10240 steps + Arduino sync
+        code, resp = self._call("PUT", "/api/config", json_body={"turns_per_portion": 2.5})
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.json_data["arduino_synced"])
+        self.assertEqual(resp.json_data["config"]["steps_per_portion"], 10240)
+        self.assertEqual(resp.json_data["config"]["turns_per_portion"], 2.5)
+        self.assertEqual(self.transport.manual_steps, 10240)
+
+        # POST /api/config updates step_interval_us + ir_cooldown_s and syncs Arduino
+        code, resp = self._call(
+            "POST", "/api/config", json_body={"step_interval_us": 1500, "ir_cooldown_s": 45}
+        )
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.json_data["arduino_synced"])
+        self.assertEqual(resp.json_data["config"]["step_interval_us"], 1500)
+        self.assertEqual(resp.json_data["config"]["ir_cooldown_s"], 45)
+        self.assertEqual(self.transport.step_interval_us, 1500)
+
+        # schedule_mode -> interval syncs interval_enabled and anchors last_interval_run_at
+        code, resp = self._call("PUT", "/api/config", json_body={"schedule_mode": "interval"})
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.json_data["config"]["schedule_mode"], "interval")
+        self.assertIs(resp.json_data["config"]["interval_enabled"], True)
+        self.assertTrue(resp.json_data["config"]["last_interval_run_at"])
+
+        # Invalid turns_per_portion & conflict rejected with 400
+        for bad in (
+            {"turns_per_portion": 0.25},
+            {"turns_per_portion": 0},
+            {"turns_per_portion": 10.5},
+            {"turns_per_portion": True},
+            {"turns_per_portion": 2.0, "steps_per_portion": 4096},
+        ):
+            with self.subTest(bad=bad):
+                code, _ = self._call("PUT", "/api/config", json_body=bad)
+                self.assertEqual(code, 400)
+
+    def test_status_current_action_transitions(self) -> None:
+        code, resp = self._call("GET", "/api/status")
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.json_data["current_action"], "En espera")
+
+        code, _ = self._call("POST", "/api/dispense", json_body={"portions": 2})
+        self.assertEqual(code, 200)
+        code, resp = self._call("GET", "/api/status")
+        self.assertIn("Dispensando", resp.json_data["current_action"])
+        self.assertIn("2 porc.", resp.json_data["current_action"])
+
+        code, _ = self._call("POST", "/api/stop", json_body={})
+        self.assertEqual(code, 200)
+        code, resp = self._call("GET", "/api/status")
+        self.assertEqual(resp.json_data["current_action"], "En espera")
+
+        code, _ = self._call("POST", "/api/unjam", json_body={"wiggle_steps": 256})
+        self.assertEqual(code, 200)
+        code, resp = self._call("GET", "/api/status")
+        self.assertIn("Destrabando", resp.json_data["current_action"])
+
+    def test_media_download_flag_and_traversal_guard(self) -> None:
+        code, resp = self._call("GET", "/media/<path:filename>", filename="sample.jpg", args={"download": "1"})
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.as_attachment)
+
+        code, resp = self._call("GET", "/media/<path:filename>", filename="sample.jpg", args={})
+        self.assertEqual(code, 200)
+        self.assertFalse(resp.as_attachment)
+
+        code, _ = self._call(
+            "GET", "/media/<path:filename>", filename="../feeder.db", args={"download": "1"}
+        )
+        self.assertEqual(code, 404)
 
 
 @unittest.skipUnless(HAS_FLASK, "flask is not installed in this Python environment")
@@ -176,13 +384,14 @@ class TestFlaskApiContract4(unittest.TestCase):
     def test_index_and_status(self) -> None:
         r_idx = self.http.get("/")
         self.assertEqual(r_idx.status_code, 200)
-        self.assertIn(b"Dispenser", r_idx.data)
+        self.assertIn(b"Comedero", r_idx.data)
 
         r_st = self.http.get("/api/status")
         self.assertEqual(r_st.status_code, 200)
         body = r_st.get_json()
         self.assertEqual(body["status"], "ok")
         self.assertEqual(body["mode"], "mock")
+        self.assertEqual(body["current_action"], "En espera")
         self.assertTrue(body["arduino"]["connected"])
         self.assertEqual(body["camera"]["backend"], "mock")
         self.assertIn("server_time", body)
@@ -197,24 +406,50 @@ class TestFlaskApiContract4(unittest.TestCase):
     def test_config_get_put_and_validation(self) -> None:
         r_get = self.http.get("/api/config")
         self.assertEqual(r_get.status_code, 200)
-        self.assertEqual(r_get.get_json()["config"]["steps_per_portion"], 4096)
+        cfg0 = r_get.get_json()["config"]
+        self.assertEqual(cfg0["steps_per_portion"], 4096)
+        self.assertEqual(cfg0["step_interval_us"], 1000)
+        self.assertEqual(cfg0["turns_per_portion"], 1.0)
+        self.assertEqual(cfg0["schedule_mode"], "schedules")
 
-        # Motor setting update syncs Arduino
-        r_put = self.http.put("/api/config", json={"steps_per_portion": 2048, "interval_enabled": True})
+        # Motor setting update via PUT + turns_per_portion syncs Arduino
+        r_put = self.http.put(
+            "/api/config", json={"turns_per_portion": 1.5, "schedule_mode": "interval"}
+        )
         self.assertEqual(r_put.status_code, 200)
         data = r_put.get_json()
         self.assertTrue(data["arduino_synced"])
-        self.assertEqual(data["config"]["steps_per_portion"], 2048)
+        self.assertEqual(data["config"]["steps_per_portion"], 6144)
+        self.assertEqual(data["config"]["turns_per_portion"], 1.5)
+        self.assertEqual(data["config"]["schedule_mode"], "interval")
+        self.assertIs(data["config"]["interval_enabled"], True)
         self.assertTrue(data["config"]["last_interval_run_at"])
+
+        # POST /api/config updates step_interval_us & ir_cooldown_s and syncs Arduino
+        r_post = self.http.post(
+            "/api/config", json={"step_interval_us": 1500, "ir_cooldown_s": 45}
+        )
+        self.assertEqual(r_post.status_code, 200)
+        pdata = r_post.get_json()
+        self.assertTrue(pdata["arduino_synced"])
+        self.assertEqual(pdata["config"]["step_interval_us"], 1500)
+        self.assertEqual(pdata["config"]["ir_cooldown_s"], 45)
 
         # Non-motor update does not force sync
         r_put2 = self.http.put("/api/config", json={"ir_cooldown_s": 60})
         self.assertEqual(r_put2.status_code, 200)
         self.assertFalse(r_put2.get_json()["arduino_synced"])
 
-        # Invalid body / out of range -> 400
+        # Invalid body / out of range / turns conflict -> 400
         self.assertEqual(self.http.put("/api/config", json={}).status_code, 400)
         self.assertEqual(self.http.put("/api/config", json={"steps_per_portion": 10}).status_code, 400)
+        self.assertEqual(self.http.put("/api/config", json={"turns_per_portion": 0.25}).status_code, 400)
+        self.assertEqual(
+            self.http.put(
+                "/api/config", json={"turns_per_portion": 2.0, "steps_per_portion": 4096}
+            ).status_code,
+            400,
+        )
 
     def test_schedules_crud_and_errors(self) -> None:
         r_create = self.http.post("/api/schedules", json={"time_hhmm": "08:30", "portions": 2, "enabled": True})
@@ -244,7 +479,10 @@ class TestFlaskApiContract4(unittest.TestCase):
         self.assertEqual(r_disp.status_code, 200)
         self.assertEqual(r_disp.get_json()["steps"], 4096)
 
-        # Motor is now busy -> 409 on second dispense & unjam
+        # Motor is now busy -> current_action reflects dispense, 409 on second dispense & unjam
+        st_disp = self.http.get("/api/status").get_json()
+        self.assertIn("Dispensando", st_disp["current_action"])
+        self.assertIn("1 porc.", st_disp["current_action"])
         self.assertEqual(self.http.post("/api/dispense", json={"steps": 512}).status_code, 409)
         self.assertEqual(self.http.post("/api/unjam", json={}).status_code, 409)
 
@@ -252,11 +490,13 @@ class TestFlaskApiContract4(unittest.TestCase):
         r_stop = self.http.post("/api/stop", json={})
         self.assertEqual(r_stop.status_code, 200)
         self.assertGreater(r_stop.get_json()["steps_cancelled"], 0)
+        self.assertEqual(self.http.get("/api/status").get_json()["current_action"], "En espera")
 
-        # Unjam now succeeds -> 200
+        # Unjam now succeeds -> 200 & current_action reflects unjam
         r_unjam = self.http.post("/api/unjam", json={"wiggle_steps": 256})
         self.assertEqual(r_unjam.status_code, 200)
         self.assertEqual(r_unjam.get_json()["wiggle_steps"], 256)
+        self.assertIn("Destrabando", self.http.get("/api/status").get_json()["current_action"])
         self.http.post("/api/stop", json={})
 
         # Invalid arguments -> 400
@@ -293,12 +533,19 @@ class TestFlaskApiContract4(unittest.TestCase):
         self.assertEqual(r_list.status_code, 200)
         self.assertEqual(r_list.get_json()["total"], 1)
 
-        # Serve file & reject traversal
+        # Serve file (inline + attachment download) & reject traversal
         r_file = self.http.get(item["url"])
         self.assertEqual(r_file.status_code, 200)
         self.assertTrue(r_file.data.startswith(b"\xff\xd8"))
+        self.assertNotIn("attachment", r_file.headers.get("Content-Disposition", "").lower())
+
+        r_dl = self.http.get(f"{item['url']}?download=1")
+        self.assertEqual(r_dl.status_code, 200)
+        self.assertIn("attachment", r_dl.headers.get("Content-Disposition", "").lower())
+
         self.assertEqual(self.http.get("/media/nonexistent.jpg").status_code, 404)
         self.assertEqual(self.http.get("/media/../feeder.db").status_code, 404)
+        self.assertEqual(self.http.get("/media/../feeder.db?download=1").status_code, 404)
 
         # Errors: 400 invalid mode/duration, 409 busy, 503 camera error
         self.assertEqual(self.http.post("/api/media/capture", json={"mode": "gif"}).status_code, 400)

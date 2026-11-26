@@ -34,7 +34,7 @@ Los *workers* deben reutilizar y adaptar estos archivos ya probados en la materi
 | :--- | :--- | :--- | :--- |
 | `/home/marocos/Documents/PlatformIO/Projects/pruebas proyecto final embebidos` | `include/stepper_motor.h`, `src/stepper_motor.cpp` | Driver completo `28BYJ-48` por registros `DDRB`/`PORTB` (`PB0..PB3`), secuencia *half-step* 8 fases, desenergizado automático al frenar. | Mantener intacto; agregar solo una máquina de estados mínima para secuencia `unjam` (o implementarla en un módulo coordinador sobre `stepper_move`). **Descartar** `liquid_crystal.*`, `main_musica.cpp`. |
 | `/home/marocos/Documents/PlatformIO/Projects/pruebas proyecto final embebidos` | `include/timer.h`, `src/timer.cpp`, `include/boton.h`, `src/boton.cpp` | Base de tiempo `TIMER2_COMPA_vect` (1 ms, hasta 16 timers virtuales) y patrón `INT0` con debounce en `PD2`. | En `timer.cpp`, proteger `counter_ms`/`is_running` con `ATOMIC_BLOCK` si se reinicia desde fuera de ISR. En `boton.cpp`, asegurar lectura/configuración 100% por registros (`DDRD`/`PORTD`/`EICRA`/`EIMSK`). |
-| `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `include/protocol.h`, `src/protocol.cpp`, `src/i2c_handlers.cpp` | Framing `0x7E..0x7F` con *byte stuffing* `0x7D` (`XOR 0x20`), `initI2C()` con desactivación de pull-ups en `PC4`/`PC5`. | Reemplazar opcodes de Lab 4 por el contrato de la Sección 5. **Corregir bug de Lab 4**: validar `pkt.size == (4 + pkt.payloadLen)` en `decodificarTrama()` antes de aceptar la trama. Desacoplar ejecución de comandos fuera de la ISR `onReceive`. |
+| `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `include/protocol.h`, `src/protocol.cpp`, `src/i2c_handlers.cpp` | Estructura modular del protocolo I2C e `initI2C()` con desactivación de pull-ups en `PC4`/`PC5`. | Reemplazar opcodes de Lab 4 y simplificar el framing a `[LEN][TYPE][PAYLOAD]` (`LEN = 2 + payloadLen`, sin delimitadores ni escapes; I2C ya delimita transacciones por hardware). Validar `inBuf[0] == len` en `decodificarTrama()` y desacoplar ejecución de comandos fuera de la ISR `onReceive`. |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `raspberry/i2c_master/{protocol,transport,controller}.py` | Clases `SMBus2Transport`, `LinuxI2CDevTransport`, `MockArduinoTransport`, `empaquetar_trama`, `decodificar_trama`. | Actualizar opcodes/mock al protocolo del dispenser. Eliminar `sensor.py` (LM35) y lógica de brillo/ADC. |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `raspberry/service/{config,database,client_sync,collector,api}.py`, `raspberry/run_service.py`, `raspberry/monitoreo-i2c.service` | Estructura Flask + SQLite + `threading.Lock` + hilo daemon + manejo de `SIGINT`/`SIGTERM` + plantilla `systemd`. | Adaptar esquema SQLite, endpoints, `worker.py` (scheduler + polling IR), sumar `camera.py` y `web/index.html`. |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio5-lutz-piazza` | *(Ignorar)* | Nada. | **PROHIBIDO usar FreeRTOS.** |
@@ -51,7 +51,7 @@ El Coordinador del swarm debe rechazar cualquier PR/commit de un worker que viol
 3. **No bloquear el superloop ni hacer trabajo pesado en ISR:**
    - Prohibido usar `delay()` o bucles bloqueantes en `src/`.
    - `Wire.onReceive` solo decodifica la trama, actualiza un buzón `volatile` (o responde `RSP_STATUS`/`RSP_PONG`/`RSP_ERROR`) y llena `txBuffer`. Las transiciones de motor se ejecutan de forma segura desde `loop()`.
-4. **Límite de buffer I2C (`Wire.h`):** Toda trama empaquetada (incluyendo *byte stuffing* en el peor caso) debe medir `<= 32` bytes.
+4. **Límite de buffer I2C (`Wire.h`):** Toda trama empaquetada `[LEN][TYPE][PAYLOAD]` debe medir `<= 32` bytes (máximo 14 bytes con `PROTOCOL_MAX_PAYLOAD = 12`).
 5. **Protección térmica del ULN2003:** Las 4 bobinas (`PB0..PB3`) DEBEN quedar en `0` cada vez que `s_steps_remaining == 0` o ante `CMD_STOP_MOTOR`.
 6. **Cámara asíncrona y serializada en RPi:** Una captura de video de 5 s NO puede bloquear el hilo de polling I2C ni el servidor HTTP Flask. Debe ejecutarse en un `ThreadPoolExecutor(max_workers=1)` (o cola dedicada) con protección contra capturas simultáneas.
 7. **Simplicidad (sin sobreingeniería):** Sin ORM (usar `sqlite3` estándar con `WAL`), sin frontend build tools (HTML + JS vanilla simple en `service/web/index.html`), sin dependencias pesadas que requieran compilación Rust/C en ARMv7.
@@ -73,12 +73,12 @@ El Coordinador del swarm debe rechazar cualquier PR/commit de un worker que viol
 
 ## 5. Contrato 2 — Protocolo Binario I2C (Single Source of Truth)
 
-Mismo *framing* que Laboratorio 4:
-`[START=0x7E] [SIZE] [TYPE] [PAYLOAD: 0..N bytes] [END=0x7F]`
-- `SIZE = 4 + len(PAYLOAD)` (tamaño lógico sin escapes).
-- *Byte stuffing* sobre `SIZE`, `TYPE` y cada byte de `PAYLOAD`: los bytes `0x7E`, `0x7F`, `0x7D` se transmiten como `0x7D` seguido de `byte ^ 0x20`.
+Framing compacto sobre transacciones I2C (sin delimitadores ni escapes, ya que el bus I2C provee `START`/`STOP` por hardware):
+`[LEN] [TYPE] [PAYLOAD: 0..N bytes]`
+- `LEN = 2 + len(PAYLOAD)` (longitud total de la trama en bytes; máx. 14 bytes con `PROTOCOL_MAX_PAYLOAD = 12`, `<= 32` bytes del buffer `Wire`).
+- `TYPE` y `PAYLOAD` se transmiten en crudo (sin escapes).
 - Todos los enteros multibyte son **Big-Endian** (complemento a dos para enteros con signo).
-- Dirección esclavo: `SLAVE_ADDR = 0x08`, Bus RPi: `1`, lectura I2C del maestro: `rx_len = 24`, `delay_s = 0.03..0.05`.
+- Dirección esclavo: `SLAVE_ADDR = 0x08`, Bus RPi: `1`, lectura I2C del maestro: `rx_len = 16`, `delay_s = 0.03..0.05`.
 
 ### 5.1 Tabla de Comandos y Respuestas
 
@@ -273,7 +273,7 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
   2. Copiar y adaptar `stepper_motor.{h,cpp}` y `timer.{h,cpp}` desde `pruebas proyecto final embebidos`.
   3. Implementar `boton.{h,cpp}` (`PD2`/`INT0`, debounce 200 ms, pull-up interno por registros) e `ir_sensor.{h,cpp}` (`PD3`/`INT1`, activo en LOW, debounce 150 ms, `ir_sensor_is_live()`, `ir_sensor_consume_latched()`, `ir_sensor_is_latched()`).
   4. Implementar `status_led.{h,cpp}` (`PB5`/`DDRB`/`PORTB`) usando `timer_create()`.
-  5. Implementar `protocol.{h,cpp}` con el Contrato 2 (validando `pkt.size == 4 + pkt.payloadLen`) e `i2c_handlers.{h,cpp}` (`Wire.begin(0x08)`, pull-ups `PC4`/`PC5` desactivados por registro, buzón `volatile` de comandos para `loop()`).
+  5. Implementar `protocol.{h,cpp}` con el Contrato 2 (`[LEN][TYPE][PAYLOAD]`, validando `inBuf[0] == len`) e `i2c_handlers.{h,cpp}` (`Wire.begin(0x08)`, pull-ups `PC4`/`PC5` desactivados por registro, buzón `volatile` de comandos para `loop()`).
   6. Implementar `main.cpp` integrando superloop cooperativo (`timer_loop`, `stepper_loop`, `boton_loop`, `ir_sensor_loop`, `i2c_loop` con máquina de estados de `unjam` y manejo de `manual_dispense_latched`).
 - **Criterio de terminado (`done`):**
   - `pio run` compila con código de salida `0` y sin warnings críticos.
@@ -284,7 +284,7 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 - **Archivos propios:** `raspberry/requirements.txt`, `raspberry/i2c_master/*.py`, `raspberry/service/{__init__,config,database,client_sync}.py`.
 - **Tareas:**
   1. Crear `requirements.txt` (`flask>=2.0.0,<3.2.0`, `smbus2>=0.4.0`, `pytest>=7.0.0`).
-  2. Adaptar `i2c_master/protocol.py` al Contrato 2 (mismos opcodes, big-endian helpers y validación estricta de `SIZE`).
+  2. Adaptar `i2c_master/protocol.py` al Contrato 2 (mismos opcodes, big-endian helpers y validación estricta de `LEN`).
   3. Adaptar `i2c_master/transport.py`: `SMBus2Transport`, `LinuxI2CDevTransport` y `MockArduinoTransport` realista (simula tiempo de giro del stepper en pasos según `time.monotonic()`, estado `BUSY`, `unjam`, `stop`, `set_config` y método `simulate_ir_detection()`).
   4. Implementar `i2c_master/controller.py` (`FeederMaster` con métodos `ping`, `get_status`, `dispense_steps`, `stop_motor`, `unjam`, `set_config`) y `service/client_sync.py` (`ThreadSafeFeederMaster` con `threading.Lock`).
   5. Implementar `service/config.py` (`ServiceConfig`) y `service/database.py` (esquema completo del Contrato 3, `WAL`, seed idempotente de `settings`, CRUD completo de `schedules`, `dispense_events`, `media_captures`, y helper de poda de medios excedentes).
@@ -335,7 +335,7 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 #### Worker E: `qa-verification`
 - **Archivos propios:** `raspberry/tests/*.py`.
 - **Tareas:**
-  1. `test_protocol.py`: round-trip de todos los comandos/respuestas, bytes reservados (`0x7E`, `0x7F`, `0x7D`) en payload, validación de `SIZE` corrupto, y **test de consistencia C++ vs Python** que parsea `include/protocol.h` y verifica que todos los opcodes coincidan exactamente con `raspberry/i2c_master/protocol.py`.
+  1. `test_protocol.py`: round-trip de todos los comandos/respuestas (con relleno `0xFF`), paso sin modificaciones de bytes binarios crudos en payload, validación de `LEN` inválido/truncado/exacto, y **test de consistencia C++ vs Python** que parsea `include/protocol.h` y verifica que todos los opcodes coincidan exactamente con `raspberry/i2c_master/protocol.py`.
   2. `test_database.py`: init idempotente, settings defaults y updates, CRUD de `schedules`, historial `dispense_events`, `media_captures` y poda por `max_media_files`.
   3. `test_camera.py`: autodetección de binarios (con `monkeypatch` sobre `shutil.which`), captura `photo`/`video` en modo mock, `CameraBusyError` concurrente y borrado seguro.
   4. `test_worker.py`: simulación de evento IR + verificación de captura y respeto de `ir_cooldown_s`, disparo único de horario fijo `HH:MM`, disparo por intervalo y registro de `manual_button`.

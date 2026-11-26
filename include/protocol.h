@@ -4,12 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-// Framing y direccion I2C (Contrato 2)
+// Framing [LEN][TYPE][PAYLOAD] (LEN = 2 + payloadLen) y direccion I2C (Contrato 2)
 const uint8_t SLAVE_ADDR       = 0x08;
-const uint8_t START_BYTE       = 0x7E;
-const uint8_t END_BYTE         = 0x7F;
-const uint8_t ESC_BYTE         = 0x7D;
-const uint8_t ESC_XOR          = 0x20;
 const uint8_t PROTOCOL_VERSION = 0x01;
 
 // Comandos (RPi -> Arduino)
@@ -52,7 +48,7 @@ const uint32_t CONFIG_MAX_MANUAL_STEPS = 40960UL;
 const uint16_t CONFIG_MIN_STEP_US      = 1000U;
 const uint16_t CONFIG_MAX_STEP_US      = 10000U;
 
-// 12 bytes de payload => peor caso con byte stuffing: 1 + 2*(2+12) + 1 = 30 <= 32 bytes (Wire.h)
+// Trama [LEN][TYPE][PAYLOAD]: LEN = 2 + payloadLen => max 14 bytes <= 32 B (buffer Wire.h)
 const uint8_t PROTOCOL_MAX_PAYLOAD = 12;
 const uint8_t PROTOCOL_MAX_FRAME   = 32;
 

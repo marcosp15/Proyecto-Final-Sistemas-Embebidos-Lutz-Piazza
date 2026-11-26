@@ -23,7 +23,7 @@ Sistema embebido distribuido compuesto por una **Raspberry Pi 3B v1.2** (maestro
 ### Decisiones Técnicas Clave
 - **Control por registros AVR:** El firmware del `ATmega328P-PU` opera directamente sobre `DDRx`, `PORTx`, `PINx`, `EICRA`, `EIMSK` y `Timer2` (`TCCR2A/B`, `OCR2A`, `TIMSK2`) sin usar `pinMode()`, `digitalWrite()`, `digitalRead()` ni `attachInterrupt()`.
 - **Compatibilidad I²C 3.3 V / 5 V:** Las resistencias *pull-up* internas de `PC4` (`A4`) y `PC5` (`A5`) se desactivan por registro al inicializar `Wire`.
-- **Protocolo I²C robusto:** Tramas delimitadas (`0x7E .. 0x7F`) con *byte stuffing* (`0x7D`), comandos no bloqueantes para dispensar por pasos con signo, destrabe (`unjam`), parada de emergencia y lectura con *latch* del sensor IR.
+- **Protocolo I²C compacto:** Tramas binarias `[LEN][TYPE][PAYLOAD]` (`LEN = 2 + len(PAYLOAD)`, máx. 14 B en el buffer `Wire` de 32 B) sobre el encuadre nativo `START`/`STOP` de I²C, con comandos no bloqueantes para dispensar por pasos con signo, destrabe (`unjam`), parada de emergencia y lectura con *latch* del sensor IR.
 - **Alimentación aislada del motor:** Fuente de 5 V dedicada exclusivamente para el módulo `ULN2003` (con `GND` común), evitando caídas de tensión o reinicios en la Raspberry Pi y el Arduino.
 
 ---

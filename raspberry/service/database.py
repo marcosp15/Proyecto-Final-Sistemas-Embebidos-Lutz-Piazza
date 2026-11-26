@@ -47,11 +47,12 @@ CREATE INDEX IF NOT EXISTS idx_media_ts ON media_captures(timestamp DESC);
 
 DEFAULT_SETTINGS: Dict[str, Any] = {
     "steps_per_portion": 4096,
-    "step_interval_us": 2000,
+    "step_interval_us": 1000,
     "capture_mode": "photo",
     "video_duration_s": 5,
     "ir_cooldown_s": 30,
     "max_media_files": 100,
+    "schedule_mode": "schedules",
     "interval_enabled": False,
     "interval_minutes": 240,
     "interval_portions": 1,
@@ -69,6 +70,7 @@ _INT_SETTING_BOUNDS: Dict[str, Tuple[int, int]] = {
 }
 
 VALID_CAPTURE_MODES = frozenset({"photo", "video"})
+VALID_SCHEDULE_MODES = frozenset({"schedules", "interval", "manual"})
 VALID_DISPENSE_SOURCES = frozenset({"schedule", "interval", "manual_web", "manual_button", "unjam"})
 VALID_DISPENSE_STATUSES = frozenset({"ok", "busy", "error"})
 VALID_MEDIA_TRIGGERS = frozenset({"ir", "manual"})
@@ -142,6 +144,13 @@ def _validate_and_serialize_setting(key: str, value: Any) -> str:
             raise ValueError(f"capture_mode inválido: {value!r} (permitidos: photo, video)")
         return value
 
+    if key == "schedule_mode":
+        if not isinstance(value, str) or value not in VALID_SCHEDULE_MODES:
+            raise ValueError(
+                f"schedule_mode inválido: {value!r} (permitidos: schedules, interval, manual)"
+            )
+        return value
+
     if key == "interval_enabled":
         return "1" if _parse_bool(value, key) else "0"
 
@@ -190,6 +199,18 @@ def init_db(db_path: str) -> None:
     """Inicializa esquema SQLite e inserta valores por defecto de forma idempotente."""
     with _connection(db_path) as conn:
         conn.executescript(SCHEMA_SQL)
+        # Migración legacy: si interval_enabled='1' existía sin schedule_mode, sembrar 'interval'
+        mode_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'schedule_mode';"
+        ).fetchone()
+        if mode_row is None:
+            int_row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'interval_enabled';"
+            ).fetchone()
+            if int_row is not None and int_row["value"] == "1":
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('schedule_mode', 'interval');"
+                )
         conn.executemany(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?);",
             [(k, _validate_and_serialize_setting(k, v)) for k, v in DEFAULT_SETTINGS.items()],
@@ -224,8 +245,26 @@ def update_settings(db_path: str, updates: Dict[str, Any]) -> Dict[str, Any]:
     """Valida y actualiza atómicamente un subconjunto de settings; retorna el estado completo."""
     if not isinstance(updates, dict):
         raise ValueError("updates debe ser un diccionario")
-    serialized = [(k, _validate_and_serialize_setting(k, v)) for k, v in updates.items()]
+    effective = dict(updates)
+    sync_mode_on_disable = False
+    if "schedule_mode" in effective:
+        mode = _validate_and_serialize_setting("schedule_mode", effective["schedule_mode"])
+        effective["interval_enabled"] = mode == "interval"
+    elif "interval_enabled" in effective:
+        enabled = _parse_bool(effective["interval_enabled"], "interval_enabled")
+        if enabled:
+            effective["schedule_mode"] = "interval"
+        else:
+            sync_mode_on_disable = True
+
+    serialized = [(k, _validate_and_serialize_setting(k, v)) for k, v in effective.items()]
     with _connection(db_path) as conn:
+        if sync_mode_on_disable:
+            row = conn.execute(
+                "SELECT value FROM settings WHERE key = 'schedule_mode';"
+            ).fetchone()
+            if row and row["value"] == "interval":
+                serialized.append(("schedule_mode", "schedules"))
         if serialized:
             conn.executemany(
                 "INSERT INTO settings (key, value) VALUES (?, ?) "

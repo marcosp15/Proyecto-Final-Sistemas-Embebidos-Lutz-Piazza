@@ -3,50 +3,784 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Dispenser Automático de Alimento</title>
+  <title>Comedero Automático de Mascotas</title>
   <style>
-    :root { --bg: #f5f6f8; --card: #fff; --border: #dcdfe4; --ink: #1f2937; --muted: #6b7280; --accent: #2563eb; --danger: #dc2626; --ok: #16a34a; }
+    :root {
+      --bg: #faf8f5;
+      --surface: #ffffff;
+      --surface-soft: #f5f1eb;
+      --surface-muted: #eee8df;
+      --border: #e6dfd5;
+      --border-strong: #d4c9ba;
+      --ink: #2d2620;
+      --muted: #6e6359;
+      --primary: #b8532c;
+      --primary-hover: #9f4421;
+      --primary-soft: #fdf1eb;
+      --sage: #2e7d63;
+      --sage-soft: #eaf6f1;
+      --amber: #9a5b0c;
+      --amber-soft: #fef4e2;
+      --danger: #c0392b;
+      --danger-hover: #a52d21;
+      --danger-soft: #fdecec;
+      --radius-lg: 14px;
+      --radius-md: 10px;
+      --radius-sm: 8px;
+      --shadow: 0 2px 10px rgba(68, 49, 34, 0.06);
+    }
+
     * { box-sizing: border-box; }
-    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--ink); line-height: 1.4; }
-    main { max-width: 1080px; margin: 0 auto; padding: 16px; display: grid; gap: 16px; }
-    header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 8px; }
-    h1 { margin: 0; font-size: 1.4rem; }
-    h2 { margin: 0 0 12px; font-size: 1.05rem; border-bottom: 1px solid var(--border); padding-bottom: 6px; }
-    section { background: var(--card); border: 1px solid var(--border); border-radius: 8px; padding: 14px; }
-    .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
-    .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 10px; }
-    .stat { background: var(--bg); border-radius: 6px; padding: 8px 10px; font-size: 0.9rem; }
-    .stat strong { display: block; font-size: 0.78rem; color: var(--muted); text-transform: uppercase; }
-    label { display: flex; flex-direction: column; font-size: 0.85rem; color: var(--muted); gap: 4px; }
-    input, select, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); }
-    button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); }
-    button.secondary { background: #fff; color: var(--ink); border-color: var(--border); }
-    button.danger { background: var(--danger); border-color: var(--danger); }
-    button:disabled { opacity: 0.55; cursor: not-allowed; }
-    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; }
-    th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
-    th { color: var(--muted); font-weight: 600; }
-    #toast { min-height: 20px; font-size: 0.9rem; font-weight: 500; }
-    .ok { color: var(--ok); }
-    .err { color: var(--danger); }
-    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; margin-top: 10px; }
-    .media-card { border: 1px solid var(--border); border-radius: 6px; overflow: hidden; background: var(--bg); display: flex; flex-direction: column; }
-    .media-card img, .media-card video { width: 100%; height: 150px; object-fit: cover; background: #000; display: block; }
-    .media-meta { padding: 8px; font-size: 0.8rem; display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-    .badge { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; background: #e5e7eb; color: var(--ink); }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      line-height: 1.45;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    main {
+      max-width: 960px;
+      margin: 0 auto;
+      padding: 16px 14px 40px;
+      display: grid;
+      gap: 16px;
+    }
+
+    /* Debug visibility */
+    body:not(.debug-mode) .debug-only {
+      display: none !important;
+    }
+
+    /* Header */
+    .top-header {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .header-bar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      background: var(--primary-soft);
+      color: var(--primary);
+      display: grid;
+      place-items: center;
+      flex-shrink: 0;
+      border: 1px solid #f2d5c7;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 1.32rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+    }
+
+    .brand-sub {
+      margin: 1px 0 0;
+      font-size: 0.85rem;
+      color: var(--muted);
+    }
+
+    /* Debug switch */
+    .debug-switch {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.84rem;
+      font-weight: 600;
+      color: var(--muted);
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 6px 12px;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .debug-switch input {
+      appearance: none;
+      -webkit-appearance: none;
+      width: 34px;
+      height: 20px;
+      border-radius: 999px;
+      background: var(--border-strong);
+      position: relative;
+      cursor: pointer;
+      transition: background 0.18s ease;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .debug-switch input::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+      transition: transform 0.18s ease;
+    }
+
+    .debug-switch input:checked {
+      background: var(--primary);
+    }
+
+    .debug-switch input:checked::after {
+      transform: translateX(14px);
+    }
+
+    .debug-switch input:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    /* Toast */
+    #toast {
+      min-height: 24px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      border-radius: var(--radius-sm);
+      padding: 0;
+      transition: opacity 0.2s ease;
+    }
+
+    #toast.visible {
+      padding: 9px 13px;
+    }
+
+    #toast.ok {
+      background: var(--sage-soft);
+      color: var(--sage);
+      border: 1px solid #c5e6d8;
+    }
+
+    #toast.err {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border: 1px solid #f5c6c2;
+    }
+
+    /* Cards & panels */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 16px;
+      box-shadow: var(--shadow);
+    }
+
+    .card-title {
+      margin: 0 0 4px;
+      font-size: 1.05rem;
+      font-weight: 700;
+    }
+
+    .card-desc {
+      margin: 0 0 14px;
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+
+    /* Debug panel */
+    .debug-panel {
+      background: #fffdf9;
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius-lg);
+      padding: 14px 16px;
+    }
+
+    .debug-panel-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .debug-panel-head h2 {
+      margin: 0;
+      font-size: 0.94rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .stat-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
+      gap: 8px;
+    }
+
+    .stat {
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 8px 10px;
+      font-size: 0.86rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      margin-bottom: 2px;
+    }
+
+    .stat.stat-highlight {
+      background: var(--primary-soft);
+      border-color: #f0cfc0;
+    }
+
+    /* Quick actions bar */
+    .quick-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+
+    .quick-primary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 10px;
+      flex: 1 1 280px;
+    }
+
+    .quick-secondary {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .inline-field {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    /* Form controls & buttons */
+    label.field {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      font-size: 0.88rem;
+      font-weight: 600;
+      color: var(--ink);
+    }
+
+    .hint {
+      font-size: 0.82rem;
+      font-weight: 400;
+      color: var(--muted);
+    }
+
+    .live-hint {
+      display: inline-block;
+      margin-top: 2px;
+      font-size: 0.83rem;
+      font-weight: 600;
+      color: var(--sage);
+    }
+
+    input[type="number"],
+    input[type="time"],
+    select {
+      font: inherit;
+      font-size: 0.95rem;
+      color: var(--ink);
+      background: #fff;
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      padding: 8px 11px;
+      min-height: 40px;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    input:focus,
+    select:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 0 3px rgba(184, 83, 44, 0.16);
+    }
+
+    /* Disabled / greyed out state */
+    .field-disabled {
+      opacity: 0.55;
+      pointer-events: none;
+    }
+
+    .field-disabled input,
+    input:disabled,
+    select:disabled {
+      background: var(--surface-muted);
+      color: var(--muted);
+      border-color: var(--border);
+      cursor: not-allowed;
+    }
+
+    button,
+    a.btn {
+      font: inherit;
+      font-size: 0.92rem;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      padding: 9px 15px;
+      min-height: 40px;
+      border-radius: var(--radius-sm);
+      border: 1px solid transparent;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s ease, border-color 0.15s ease, transform 0.08s ease;
+    }
+
+    button:active:not(:disabled),
+    a.btn:active {
+      transform: translateY(1px);
+    }
+
+    button:focus-visible,
+    a.btn:focus-visible {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    button.primary,
+    a.btn.primary {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    button.primary:hover:not(:disabled),
+    a.btn.primary:hover {
+      background: var(--primary-hover);
+    }
+
+    button.primary.lg {
+      padding: 10px 20px;
+      font-size: 0.98rem;
+      border-radius: var(--radius-md);
+    }
+
+    button.secondary,
+    a.btn.secondary {
+      background: var(--surface);
+      color: var(--ink);
+      border-color: var(--border-strong);
+    }
+
+    button.secondary:hover:not(:disabled),
+    a.btn.secondary:hover {
+      background: var(--surface-soft);
+    }
+
+    button.danger {
+      background: var(--danger);
+      color: #fff;
+    }
+
+    button.danger:hover:not(:disabled) {
+      background: var(--danger-hover);
+    }
+
+    button.danger-soft {
+      background: var(--danger-soft);
+      color: var(--danger);
+      border-color: #f3c4bf;
+    }
+
+    button.danger-soft:hover:not(:disabled) {
+      background: #fadbd8;
+    }
+
+    button.sm,
+    a.btn.sm {
+      min-height: 32px;
+      padding: 5px 10px;
+      font-size: 0.82rem;
+    }
+
+    button:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+
+    /* Tabs */
+    .tablist {
+      display: flex;
+      gap: 6px;
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-lg);
+      padding: 5px;
+      overflow-x: auto;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+
+    .tablist::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tab-btn {
+      flex: 1 0 auto;
+      background: transparent;
+      color: var(--muted);
+      border: 1px solid transparent;
+      border-radius: var(--radius-md);
+      padding: 9px 14px;
+      font-size: 0.9rem;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .tab-btn:hover {
+      color: var(--ink);
+      background: rgba(255, 255, 255, 0.65);
+    }
+
+    .tab-btn[aria-selected="true"] {
+      background: var(--surface);
+      color: var(--primary);
+      border-color: var(--border);
+      box-shadow: 0 1px 4px rgba(68, 49, 34, 0.08);
+    }
+
+    .tab-panel {
+      display: grid;
+      gap: 16px;
+    }
+
+    .tab-panel[hidden] {
+      display: none;
+    }
+
+    /* Segmented 3-way schedule mode selector */
+    .mode-selector {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 16px;
+    }
+
+    .mode-option {
+      position: relative;
+    }
+
+    .mode-option input {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    .mode-option label {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      gap: 2px;
+      padding: 11px 10px;
+      border-radius: var(--radius-md);
+      border: 1.5px solid var(--border);
+      background: var(--surface-soft);
+      color: var(--muted);
+      font-size: 0.9rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .mode-option label small {
+      font-size: 0.76rem;
+      font-weight: 400;
+    }
+
+    .mode-option input:checked + label {
+      background: var(--primary-soft);
+      border-color: var(--primary);
+      color: var(--primary);
+      box-shadow: 0 1px 4px rgba(184, 83, 44, 0.12);
+    }
+
+    .mode-option input:focus-visible + label {
+      outline: 2px solid var(--primary);
+      outline-offset: 2px;
+    }
+
+    .mode-pane[hidden] {
+      display: none;
+    }
+
+    .info-box {
+      background: var(--surface-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      padding: 14px 16px;
+      color: var(--ink);
+      font-size: 0.92rem;
+    }
+
+    .info-box strong {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+    }
+
+    /* Form grids & rows */
+    .form-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: flex-end;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .form-actions {
+      margin-top: 14px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+    }
+
+    /* Tables */
+    .table-wrap {
+      overflow-x: auto;
+      margin-top: 12px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.89rem;
+      font-variant-numeric: tabular-nums;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 10px 10px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+
+    th {
+      color: var(--muted);
+      font-size: 0.79rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+      background: var(--surface-soft);
+    }
+
+    th:first-child { border-radius: var(--radius-sm) 0 0 0; }
+    th:last-child { border-radius: 0 var(--radius-sm) 0 0; }
+
+    .actions-cell {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .empty-row {
+      text-align: center;
+      color: var(--muted);
+      padding: 20px 10px;
+    }
+
+    /* Badges */
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      padding: 3px 9px;
+      border-radius: 999px;
+      font-size: 0.77rem;
+      font-weight: 600;
+      background: var(--surface-muted);
+      color: var(--ink);
+      white-space: nowrap;
+    }
+
+    .badge.ok { background: var(--sage-soft); color: var(--sage); }
+    .badge.warn { background: var(--amber-soft); color: var(--amber); }
+    .badge.err { background: var(--danger-soft); color: var(--danger); }
+    .badge.accent { background: var(--primary-soft); color: var(--primary); }
+
+    /* Gallery */
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+
+    .toolbar-controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+      gap: 14px;
+    }
+
+    .media-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-md);
+      overflow: hidden;
+      background: var(--surface);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .media-card img,
+    .media-card video {
+      width: 100%;
+      height: 175px;
+      object-fit: cover;
+      background: #1c1917;
+      display: block;
+    }
+
+    .media-body {
+      padding: 10px 12px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      flex: 1;
+    }
+
+    .media-time {
+      font-size: 0.85rem;
+      font-weight: 600;
+      color: var(--ink);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .media-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .media-actions {
+      display: flex;
+      gap: 8px;
+      margin-top: auto;
+      padding-top: 4px;
+    }
+
+    .media-actions > * {
+      flex: 1;
+    }
+
+    .empty-state {
+      grid-column: 1 / -1;
+      text-align: center;
+      color: var(--muted);
+      background: var(--surface-soft);
+      border: 1px dashed var(--border-strong);
+      border-radius: var(--radius-md);
+      padding: 28px 16px;
+      margin: 0;
+    }
+
+    @media (max-width: 600px) {
+      main { padding: 12px 10px 32px; gap: 12px; }
+      .card { padding: 14px; }
+      .brand h1 { font-size: 1.15rem; }
+      .quick-primary { width: 100%; }
+      .quick-primary button.primary { flex: 1 1 180px; }
+      .quick-secondary { width: 100%; }
+      .quick-secondary button { flex: 1; }
+      .mode-selector { grid-template-columns: 1fr; }
+      .mode-option label { flex-direction: row; justify-content: space-between; text-align: left; padding: 10px 14px; }
+    }
   </style>
 </head>
 <body>
 <main>
-  <header>
-    <h1>Dispenser Automático de Alimento</h1>
-    <div id="toast" aria-live="polite"></div>
+  <!-- Encabezado -->
+  <header class="top-header">
+    <div class="header-bar">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+            <circle cx="7.5" cy="8.5" r="2.1"/>
+            <circle cx="12" cy="6.5" r="2.1"/>
+            <circle cx="16.5" cy="8.5" r="2.1"/>
+            <circle cx="19" cy="12.5" r="1.9"/>
+            <path d="M12 11.2c-3.1 0-5.7 2.4-5.7 5.2 0 1.9 1.4 3.1 3.3 3.1 1 0 1.7-.3 2.4-.3s1.4.3 2.4.3c1.9 0 3.3-1.2 3.3-3.1 0-2.8-2.6-5.2-5.7-5.2z"/>
+          </svg>
+        </div>
+        <div>
+          <h1>Comedero Automático de Mascotas</h1>
+          <p class="brand-sub">Control simple de porciones, horarios y cámara</p>
+        </div>
+      </div>
+
+      <label class="debug-switch" for="debug-toggle">
+        <input type="checkbox" id="debug-toggle" autocomplete="off">
+        <span>Debugging</span>
+      </label>
+    </div>
+
+    <div id="toast" role="status" aria-live="polite"></div>
   </header>
 
-  <!-- 1. Estado en vivo y controles -->
-  <section>
-    <h2>Estado en vivo y controles</h2>
-    <div class="grid" id="status-grid">
+  <!-- Panel de Debugging (oculto por defecto) -->
+  <section id="debug-panel" class="debug-panel debug-only" aria-label="Panel técnico de debugging">
+    <div class="debug-panel-head">
+      <h2>Estado técnico en vivo (Debugging)</h2>
+      <button type="button" id="btn-mock-ir" class="secondary sm" style="display: none;">Simular IR (mock)</button>
+    </div>
+    <div class="stat-grid">
+      <div class="stat stat-highlight"><strong>Acción actual</strong><span id="st-action">En espera</span></div>
       <div class="stat"><strong>Modo</strong><span id="st-mode">-</span></div>
       <div class="stat"><strong>Arduino I2C</strong><span id="st-arduino">-</span></div>
       <div class="stat"><strong>Motor / Pasos</strong><span id="st-motor">-</span></div>
@@ -55,121 +789,270 @@
       <div class="stat"><strong>Cámara</strong><span id="st-camera">-</span></div>
       <div class="stat"><strong>Hora servidor</strong><span id="st-time">-</span></div>
     </div>
-    <div class="row" style="margin-top: 12px;">
-      <label style="flex-direction: row; align-items: center; gap: 6px;">
-        Porciones:
-        <input type="number" id="dispense-portions" min="1" max="10" value="1" style="width: 68px;">
-      </label>
-      <button id="btn-dispense">Dispensar ahora</button>
-      <button id="btn-unjam" class="secondary">Destrabar</button>
-      <button id="btn-stop" class="danger">Parada de emergencia</button>
-      <button id="btn-capture" class="secondary">Capturar ahora</button>
-      <button id="btn-mock-ir" class="secondary" style="display: none;">Simular IR (mock)</button>
-    </div>
   </section>
 
-  <!-- 2. Configuración -->
-  <section>
-    <h2>Configuración</h2>
-    <form id="config-form">
-      <div class="grid">
-        <label>Pasos por porción (256..40960)
-          <input type="number" name="steps_per_portion" min="256" max="40960" required>
-        </label>
-        <label>Intervalo de paso µs (1000..10000)
-          <input type="number" name="step_interval_us" min="1000" max="10000" required>
-        </label>
-        <label>Modo de captura
-          <select name="capture_mode">
-            <option value="photo">Foto (JPEG)</option>
-            <option value="video">Video corto (MP4)</option>
+  <!-- Barra de acciones rápidas -->
+  <section class="card" aria-label="Acciones rápidas">
+    <div class="quick-actions">
+      <div class="quick-primary">
+        <label class="inline-field" for="dispense-portions">
+          <span>Porciones:</span>
+          <select id="dispense-portions" aria-label="Cantidad de porciones a servir">
+            <option value="1" selected>1 porción</option>
+            <option value="2">2 porciones</option>
+            <option value="3">3 porciones</option>
+            <option value="4">4 porciones</option>
+            <option value="5">5 porciones</option>
+            <option value="6">6 porciones</option>
+            <option value="7">7 porciones</option>
+            <option value="8">8 porciones</option>
+            <option value="9">9 porciones</option>
+            <option value="10">10 porciones</option>
           </select>
         </label>
-        <label>Duración video s (2..15)
-          <input type="number" name="video_duration_s" min="2" max="15" required>
+        <button type="button" id="btn-dispense" class="primary lg">Dar comida ahora</button>
+      </div>
+      <div class="quick-secondary">
+        <button type="button" id="btn-unjam" class="secondary">Destrabar</button>
+        <button type="button" id="btn-stop" class="danger">Detener</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Navegación por pestañas -->
+  <div class="tablist" role="tablist" aria-label="Secciones del comedero">
+    <button type="button" class="tab-btn" role="tab" id="tab-porcion" aria-controls="panel-porcion" aria-selected="true" tabindex="0">Configuración de porción</button>
+    <button type="button" class="tab-btn" role="tab" id="tab-camara" aria-controls="panel-camara" aria-selected="false" tabindex="-1">Configuración de cámara</button>
+    <button type="button" class="tab-btn" role="tab" id="tab-galeria" aria-controls="panel-galeria" aria-selected="false" tabindex="-1">Galería</button>
+    <button type="button" class="tab-btn" role="tab" id="tab-historial" aria-controls="panel-historial" aria-selected="false" tabindex="-1">Historial</button>
+  </div>
+
+  <!-- Tab 1: Configuración de porción -->
+  <div id="panel-porcion" class="tab-panel" role="tabpanel" aria-labelledby="tab-porcion">
+    <section class="card">
+      <h2 class="card-title">Tamaño de la porción</h2>
+      <p class="card-desc">Definí cuántas vueltas del dosificador equivalen a 1 porción (ej.: 3 vueltas = 1 porción).</p>
+      <form id="portion-form" class="form-row">
+        <label class="field" for="turns-per-portion" style="max-width: 260px;">
+          Cantidad de vueltas por porción
+          <input type="number" id="turns-per-portion" name="turns_per_portion" min="0.5" max="10" step="0.5" value="1" required>
+          <span class="hint">Entre 0,5 y 10 vueltas (en pasos de 0,5).</span>
         </label>
-        <label>Cooldown IR s (5..600)
-          <input type="number" name="ir_cooldown_s" min="5" max="600" required>
-        </label>
-        <label>Máximo archivos media (10..500)
-          <input type="number" name="max_media_files" min="10" max="500" required>
-        </label>
-        <label>Modo intervalo habilitado
-          <select name="interval_enabled">
-            <option value="0">Desactivado</option>
-            <option value="1">Activado</option>
+        <button type="submit" class="primary" style="margin-bottom: 22px;">Guardar porción</button>
+      </form>
+    </section>
+
+    <section class="card">
+      <h2 class="card-title">Programación automática</h2>
+      <p class="card-desc">Elegí cómo querés que el comedero sirva comida automáticamente.</p>
+
+      <div class="mode-selector" role="radiogroup" aria-label="Modo de programación automática">
+        <div class="mode-option">
+          <input type="radio" name="schedule_mode" id="mode-opt-schedules" value="schedules" checked>
+          <label for="mode-opt-schedules">
+            <span>Horarios fijos</span>
+            <small>A horas elegidas</small>
+          </label>
+        </div>
+        <div class="mode-option">
+          <input type="radio" name="schedule_mode" id="mode-opt-interval" value="interval">
+          <label for="mode-opt-interval">
+            <span>Por intervalo</span>
+            <small>Cada ciertos minutos</small>
+          </label>
+        </div>
+        <div class="mode-option">
+          <input type="radio" name="schedule_mode" id="mode-opt-manual" value="manual">
+          <label for="mode-opt-manual">
+            <span>Solo manual</span>
+            <small>Sin disparos automáticos</small>
+          </label>
+        </div>
+      </div>
+
+      <!-- Modo: Horarios fijos -->
+      <div id="pane-schedules" class="mode-pane">
+        <form id="schedule-form" class="form-row">
+          <label class="field" for="sched-time">
+            Hora
+            <input type="time" id="sched-time" required>
+          </label>
+          <label class="field" for="sched-portions">
+            Porciones (1 a 10)
+            <input type="number" id="sched-portions" min="1" max="10" value="1" style="width: 110px;" required>
+          </label>
+          <button type="submit" class="primary">Agregar horario</button>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Hora</th>
+                <th>Porciones</th>
+                <th>Estado</th>
+                <th>Última vez</th>
+                <th>Acciones</th>
+              </tr>
+            </thead>
+            <tbody id="schedules-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Modo: Por intervalo -->
+      <div id="pane-interval" class="mode-pane" hidden>
+        <form id="interval-form">
+          <div class="form-grid">
+            <label class="field" for="interval-minutes">
+              Cada cuántos minutos (1 a 1440)
+              <input type="number" id="interval-minutes" name="interval_minutes" min="1" max="1440" value="240" required>
+              <span id="interval-hint" class="live-hint">= cada 4 h</span>
+            </label>
+            <label class="field" for="interval-portions">
+              Porciones por vez (1 a 10)
+              <input type="number" id="interval-portions" name="interval_portions" min="1" max="10" value="1" required>
+              <span class="hint">Cantidad servida en cada intervalo.</span>
+            </label>
+          </div>
+          <div class="form-actions">
+            <button type="submit" class="primary">Guardar intervalo</button>
+          </div>
+        </form>
+      </div>
+
+      <!-- Modo: Solo manual -->
+      <div id="pane-manual" class="mode-pane" hidden>
+        <div class="info-box">
+          <strong>Alimentación automática pausada</strong>
+          El comedero solo servirá comida cuando presiones «Dar comida ahora» o el botón físico del equipo. Tus horarios fijos quedan guardados para cuando decidas volver a usarlos.
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <!-- Tab 2: Configuración de cámara -->
+  <div id="panel-camara" class="tab-panel" role="tabpanel" aria-labelledby="tab-camara" hidden>
+    <section class="card">
+      <h2 class="card-title">Configuración de cámara</h2>
+      <p class="card-desc">Elegí qué registra la cámara cuando detecta a tu mascota o al capturar manualmente.</p>
+      <form id="camera-form">
+        <div class="form-grid">
+          <label class="field" for="capture-mode">
+            Modo de captura
+            <select id="capture-mode" name="capture_mode">
+              <option value="photo">Foto</option>
+              <option value="video">Video corto</option>
+            </select>
+            <span class="hint">Foto guarda una imagen; Video corto graba un clip breve.</span>
+          </label>
+
+          <label class="field" id="video-duration-field" for="video-duration">
+            Duración del video (segundos, 2 a 15)
+            <input type="number" id="video-duration" name="video_duration_s" min="2" max="15" value="5" required>
+            <span class="hint" id="video-duration-hint">Solo disponible cuando el modo es Video corto.</span>
+          </label>
+
+          <label class="field" for="max-media-files">
+            Máximo de archivos guardados (10 a 500)
+            <input type="number" id="max-media-files" name="max_media_files" min="10" max="500" value="100" required>
+            <span class="hint">Al alcanzar el límite, se borran automáticamente los archivos más antiguos para ahorrar espacio.</span>
+          </label>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="primary">Guardar configuración de cámara</button>
+        </div>
+      </form>
+    </section>
+  </div>
+
+  <!-- Tab 3: Galería -->
+  <div id="panel-galeria" class="tab-panel" role="tabpanel" aria-labelledby="tab-galeria" hidden>
+    <section class="card">
+      <div class="toolbar">
+        <div>
+          <h2 class="card-title" style="margin-bottom: 2px;">Galería</h2>
+          <p class="card-desc" style="margin: 0;">Fotos y videos recientes de tu mascota (se actualiza automáticamente).</p>
+        </div>
+        <div class="toolbar-controls">
+          <select id="media-filter" aria-label="Filtrar galería">
+            <option value="">Todos</option>
+            <option value="photo">Fotos</option>
+            <option value="video">Videos</option>
           </select>
-        </label>
-        <label>Intervalo minutos (1..1440)
-          <input type="number" name="interval_minutes" min="1" max="1440" required>
-        </label>
-        <label>Porciones por intervalo (1..10)
-          <input type="number" name="interval_portions" min="1" max="10" required>
-        </label>
+          <button type="button" id="btn-capture" class="primary">Capturar ahora</button>
+        </div>
       </div>
-      <div class="row" style="margin-top: 12px;">
-        <button type="submit">Guardar configuración</button>
+      <div class="gallery" id="media-gallery"></div>
+    </section>
+  </div>
+
+  <!-- Tab 4: Historial -->
+  <div id="panel-historial" class="tab-panel" role="tabpanel" aria-labelledby="tab-historial" hidden>
+    <section class="card">
+      <h2 class="card-title">Historial de comidas</h2>
+      <p class="card-desc">Últimos dispensados registrados (se actualiza automáticamente).</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Fecha y hora</th>
+              <th>Origen</th>
+              <th>Porciones</th>
+              <th class="debug-only">Pasos</th>
+              <th>Estado</th>
+              <th>Detalle</th>
+            </tr>
+          </thead>
+          <tbody id="history-body"></tbody>
+        </table>
       </div>
-    </form>
-  </section>
-
-  <!-- 3. Horarios fijos -->
-  <section>
-    <h2>Horarios fijos</h2>
-    <form id="schedule-form" class="row" style="margin-bottom: 12px;">
-      <label>Hora (HH:MM)
-        <input type="time" id="sched-time" required>
-      </label>
-      <label>Porciones (1..10)
-        <input type="number" id="sched-portions" min="1" max="10" value="1" style="width: 80px;" required>
-      </label>
-      <button type="submit" style="align-self: flex-end;">Agregar horario</button>
-    </form>
-    <table>
-      <thead>
-        <tr><th>Hora</th><th>Porciones</th><th>Estado</th><th>Último disparo</th><th>Acciones</th></tr>
-      </thead>
-      <tbody id="schedules-body"></tbody>
-    </table>
-  </section>
-
-  <!-- 4. Historial reciente -->
-  <section>
-    <div class="row" style="justify-content: space-between;">
-      <h2 style="border: 0; margin: 0; padding: 0;">Historial de dispensados</h2>
-      <button id="btn-refresh-history" class="secondary">Actualizar</button>
-    </div>
-    <table style="margin-top: 8px;">
-      <thead>
-        <tr><th>Fecha / Hora</th><th>Origen</th><th>Porciones</th><th>Pasos</th><th>Estado</th><th>Detalle</th></tr>
-      </thead>
-      <tbody id="history-body"></tbody>
-    </table>
-  </section>
-
-  <!-- 5. Galería de medios -->
-  <section>
-    <div class="row" style="justify-content: space-between;">
-      <h2 style="border: 0; margin: 0; padding: 0;">Galería de fotos y videos</h2>
-      <div class="row">
-        <select id="media-filter">
-          <option value="">Todos</option>
-          <option value="photo">Fotos</option>
-          <option value="video">Videos</option>
-        </select>
-        <button id="btn-refresh-media" class="secondary">Actualizar</button>
-      </div>
-    </div>
-    <div class="gallery" id="media-gallery"></div>
-  </section>
+    </section>
+  </div>
 </main>
 
 <script>
 const toastEl = document.getElementById("toast");
+const debugToggle = document.getElementById("debug-toggle");
+const tabs = Array.from(document.querySelectorAll('[role="tab"]'));
+const panels = Array.from(document.querySelectorAll('[role="tabpanel"]'));
+
+let toastTimer = null;
+let currentScheduleMode = "schedules";
+let lastMediaSig = null;
+let lastHistorySig = null;
+let localActionPreview = "";
+let localActionUntil = 0;
+
+// Debugging siempre desactivado al cargar
+debugToggle.checked = false;
+document.body.classList.remove("debug-mode");
+
+function isDebug() {
+  return debugToggle.checked;
+}
+
+debugToggle.addEventListener("change", () => {
+  document.body.classList.toggle("debug-mode", debugToggle.checked);
+  if (debugToggle.checked) {
+    refreshStatus();
+  }
+});
 
 function notify(msg, isError = false) {
   toastEl.textContent = msg;
-  toastEl.className = isError ? "err" : "ok";
+  toastEl.className = `visible ${isError ? "err" : "ok"}`;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    toastEl.textContent = "";
+    toastEl.className = "";
+  }, 6000);
+}
+
+function setLocalAction(text, holdMs = 3000) {
+  localActionPreview = text;
+  localActionUntil = Date.now() + holdMs;
+  document.getElementById("st-action").textContent = text;
 }
 
 async function api(path, options = {}) {
@@ -177,48 +1060,296 @@ async function api(path, options = {}) {
   const res = await fetch(path, opts);
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    throw new Error(data.error || `HTTP ${res.status}`);
+    throw new Error(data.error || `Error HTTP ${res.status}`);
   }
   return data;
 }
 
+function pad2(n) {
+  return String(n).padStart(2, "0");
+}
+
+function formatDateTime(iso) {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return `${pad2(d.getDate())}/${pad2(d.getMonth() + 1)}/${d.getFullYear()} ${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+function formatDateOnly(str) {
+  if (!str) return "-";
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(str);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  return str;
+}
+
+function formatPortions(val) {
+  const num = Number(val);
+  if (Number.isNaN(num) || num <= 0) return "-";
+  return Number.isInteger(num) ? String(num) : String(Math.round(num * 10) / 10).replace(".", ",");
+}
+
+function formatIntervalText(minutes) {
+  const m = parseInt(minutes, 10);
+  if (Number.isNaN(m) || m < 1) return "Ingresá un valor entre 1 y 1440 minutos";
+  if (m < 60) return `= cada ${m} min`;
+  const h = Math.floor(m / 60);
+  const rem = m % 60;
+  return rem === 0 ? `= cada ${h} h` : `= cada ${h} h ${rem} min`;
+}
+
+function friendlySource(source) {
+  const map = {
+    manual_web: "Manual (web)",
+    manual_button: "Botón del equipo",
+    schedule: "Horario programado",
+    interval: "Por intervalo",
+    unjam: "Destrabe",
+  };
+  return map[source] || source || "-";
+}
+
+function friendlyStatus(status) {
+  const map = {
+    ok: { text: "Completado", cls: "ok" },
+    busy: { text: "Ocupado", cls: "warn" },
+    error: { text: "Error", cls: "err" },
+  };
+  return map[status] || { text: status || "-", cls: "" };
+}
+
+function friendlyTrigger(trigger) {
+  if (trigger === "ir") return "Mascota detectada";
+  if (trigger === "manual") return "Manual";
+  return trigger || "Captura";
+}
+
+// --- Pestañas ---
+function activateTab(tabId) {
+  for (const btn of tabs) {
+    const selected = btn.id === tabId;
+    btn.setAttribute("aria-selected", selected ? "true" : "false");
+    btn.tabIndex = selected ? 0 : -1;
+  }
+  for (const panel of panels) {
+    const match = panel.getAttribute("aria-labelledby") === tabId;
+    panel.hidden = !match;
+  }
+  if (tabId === "tab-galeria") loadMedia();
+  if (tabId === "tab-historial") loadHistory();
+  if (tabId === "tab-porcion") loadSchedules();
+}
+
+for (const btn of tabs) {
+  btn.addEventListener("click", () => activateTab(btn.id));
+  btn.addEventListener("keydown", (e) => {
+    const idx = tabs.indexOf(btn);
+    if (e.key === "ArrowRight") {
+      e.preventDefault();
+      const next = tabs[(idx + 1) % tabs.length];
+      activateTab(next.id);
+      next.focus();
+    } else if (e.key === "ArrowLeft") {
+      e.preventDefault();
+      const prev = tabs[(idx - 1 + tabs.length) % tabs.length];
+      activateTab(prev.id);
+      prev.focus();
+    }
+  });
+}
+
+// --- Estado técnico (Debugging) ---
 async function refreshStatus() {
   try {
     const data = await api("/api/status");
-    const a = data.arduino;
-    const w = data.worker;
-    const c = data.camera;
-    document.getElementById("st-mode").textContent = data.mode;
+    const a = data.arduino || {};
+    const w = data.worker || {};
+    const c = data.camera || {};
+
+    const backendAction = data.current_action || "En espera";
+    const isIdleAction = backendAction.toLowerCase() === "en espera";
+    if (!isIdleAction) {
+      localActionPreview = "";
+      localActionUntil = 0;
+      document.getElementById("st-action").textContent = backendAction;
+    } else if (localActionPreview && Date.now() < localActionUntil) {
+      document.getElementById("st-action").textContent = localActionPreview;
+    } else {
+      document.getElementById("st-action").textContent = backendAction;
+    }
+
+    document.getElementById("st-mode").textContent = data.mode || "-";
     document.getElementById("st-arduino").textContent = a.connected ? "Conectado" : "Desconectado";
-    document.getElementById("st-motor").textContent = a.motor_busy ? `Girando (${a.steps_remaining})` : "Libre";
+    document.getElementById("st-motor").textContent = a.motor_busy
+      ? `Girando (${a.steps_remaining ?? 0} pasos)`
+      : "Libre";
     document.getElementById("st-ir").textContent = a.ir_live ? "Presencia detectada" : "Sin presencia";
-    document.getElementById("st-next").textContent = w.next_schedule
-      ? `${w.next_schedule.time_hhmm} (${w.next_schedule.portions} porc.)`
-      : "Ninguno";
-    document.getElementById("st-camera").textContent = `${c.backend}${c.capturing ? " (capturando...)" : ""}`;
-    document.getElementById("st-time").textContent = data.server_time;
-    document.getElementById("btn-mock-ir").style.display = data.mode === "mock" ? "inline-block" : "none";
+
+    if (w.next_schedule) {
+      const ns = w.next_schedule;
+      const extra = ns.mode === "interval" && ns.interval_minutes
+        ? ` · ${formatIntervalText(ns.interval_minutes).replace(/^= /, "")}`
+        : "";
+      document.getElementById("st-next").textContent = `${ns.time_hhmm} (${ns.portions} porc.${extra})`;
+    } else {
+      document.getElementById("st-next").textContent = "Ninguno";
+    }
+
+    document.getElementById("st-camera").textContent = `${c.backend || "-"}${c.capturing ? " (capturando...)" : ""}`;
+    document.getElementById("st-time").textContent = formatDateTime(data.server_time);
+    document.getElementById("btn-mock-ir").style.display = data.mode === "mock" ? "inline-flex" : "none";
   } catch (err) {
-    notify(`Error consultando estado: ${err.message}`, true);
+    if (isDebug()) {
+      notify(`Error consultando estado: ${err.message}`, true);
+    }
   }
+}
+
+// --- Configuración general ---
+function updateScheduleModeUI(mode) {
+  currentScheduleMode = mode;
+  const radio = document.querySelector(`input[name="schedule_mode"][value="${mode}"]`);
+  if (radio) radio.checked = true;
+  document.getElementById("pane-schedules").hidden = mode !== "schedules";
+  document.getElementById("pane-interval").hidden = mode !== "interval";
+  document.getElementById("pane-manual").hidden = mode !== "manual";
+}
+
+function updateVideoDurationState() {
+  const mode = document.getElementById("capture-mode").value;
+  const isPhoto = mode === "photo";
+  const input = document.getElementById("video-duration");
+  const field = document.getElementById("video-duration-field");
+  const hint = document.getElementById("video-duration-hint");
+  input.disabled = isPhoto;
+  field.classList.toggle("field-disabled", isPhoto);
+  hint.textContent = isPhoto
+    ? "Deshabilitado en modo Foto. Elegí «Video corto» para ajustarlo."
+    : "Duración de cada video grabado (entre 2 y 15 segundos).";
+}
+
+function updateIntervalHint() {
+  const val = document.getElementById("interval-minutes").value;
+  document.getElementById("interval-hint").textContent = formatIntervalText(val);
 }
 
 async function loadConfig() {
   try {
     const { config } = await api("/api/config");
-    const form = document.getElementById("config-form");
-    for (const key of [
-      "steps_per_portion", "step_interval_us", "capture_mode", "video_duration_s",
-      "ir_cooldown_s", "max_media_files", "interval_minutes", "interval_portions"
-    ]) {
-      if (form.elements[key]) form.elements[key].value = config[key];
-    }
-    form.elements["interval_enabled"].value = config.interval_enabled ? "1" : "0";
+    const turns = config.turns_per_portion != null
+      ? config.turns_per_portion
+      : Math.max(0.5, Math.min(10, Math.round((config.steps_per_portion / 4096) * 2) / 2));
+    document.getElementById("turns-per-portion").value = turns;
+
+    const mode = config.schedule_mode || (config.interval_enabled ? "interval" : "schedules");
+    updateScheduleModeUI(mode);
+
+    document.getElementById("interval-minutes").value = config.interval_minutes ?? 240;
+    document.getElementById("interval-portions").value = config.interval_portions ?? 1;
+    updateIntervalHint();
+
+    document.getElementById("capture-mode").value = config.capture_mode || "photo";
+    document.getElementById("video-duration").value = config.video_duration_s ?? 5;
+    document.getElementById("max-media-files").value = config.max_media_files ?? 100;
+    updateVideoDurationState();
   } catch (err) {
-    notify(`Error cargando configuración: ${err.message}`, true);
+    notify(`No se pudo cargar la configuración: ${err.message}`, true);
   }
 }
 
+document.getElementById("portion-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const turns = parseFloat(document.getElementById("turns-per-portion").value);
+  if (Number.isNaN(turns) || turns < 0.5 || turns > 10) {
+    notify("Ingresá entre 0,5 y 10 vueltas por porción.", true);
+    return;
+  }
+  try {
+    const res = await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({ turns_per_portion: turns }),
+    });
+    if (isDebug() && res.config) {
+      notify(`Porción guardada (${res.config.turns_per_portion} vueltas / ${res.config.steps_per_portion} pasos, sync: ${res.arduino_synced ? "sí" : "no"}).`);
+    } else {
+      notify("Tamaño de porción guardado.");
+    }
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+for (const radio of document.querySelectorAll('input[name="schedule_mode"]')) {
+  radio.addEventListener("change", async () => {
+    const nextMode = radio.value;
+    const prevMode = currentScheduleMode;
+    updateScheduleModeUI(nextMode);
+    const labels = {
+      schedules: "Horarios fijos",
+      interval: "Por intervalo",
+      manual: "Solo manual",
+    };
+    try {
+      await api("/api/config", {
+        method: "PUT",
+        body: JSON.stringify({ schedule_mode: nextMode }),
+      });
+      notify(`Programación cambiada a ${labels[nextMode] || nextMode}.`);
+      refreshStatus();
+    } catch (err) {
+      updateScheduleModeUI(prevMode);
+      notify(`No se pudo cambiar el modo: ${err.message}`, true);
+    }
+  });
+}
+
+document.getElementById("interval-minutes").addEventListener("input", updateIntervalHint);
+
+document.getElementById("interval-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const interval_minutes = parseInt(document.getElementById("interval-minutes").value, 10);
+  const interval_portions = parseInt(document.getElementById("interval-portions").value, 10);
+  try {
+    await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify({
+        schedule_mode: "interval",
+        interval_minutes,
+        interval_portions,
+      }),
+    });
+    notify(`Intervalo guardado (${formatIntervalText(interval_minutes).replace(/^= /, "")}).`);
+    refreshStatus();
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+document.getElementById("capture-mode").addEventListener("change", updateVideoDurationState);
+
+document.getElementById("camera-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const capture_mode = document.getElementById("capture-mode").value;
+  const max_media_files = parseInt(document.getElementById("max-media-files").value, 10);
+  const payload = { capture_mode, max_media_files };
+  if (capture_mode === "video") {
+    const video_duration_s = parseInt(document.getElementById("video-duration").value, 10);
+    if (!Number.isNaN(video_duration_s)) {
+      payload.video_duration_s = video_duration_s;
+    }
+  }
+  try {
+    await api("/api/config", {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    });
+    notify("Configuración de cámara guardada.");
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+// --- Horarios fijos ---
 async function loadSchedules() {
   try {
     const { schedules } = await api("/api/schedules");
@@ -228,96 +1359,125 @@ async function loadSchedules() {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
       td.colSpan = 5;
-      td.textContent = "Sin horarios cargados.";
+      td.className = "empty-row";
+      td.textContent = "Todavía no agregaste horarios fijos.";
       tr.appendChild(td);
       tbody.appendChild(tr);
       return;
     }
+
     for (const s of schedules) {
       const tr = document.createElement("tr");
-      const vals = [s.time_hhmm, String(s.portions), s.enabled ? "Activo" : "Pausado", s.last_triggered_date || "-"];
-      for (const v of vals) {
-        const td = document.createElement("td");
-        td.textContent = v;
-        tr.appendChild(td);
-      }
+
+      const tdTime = document.createElement("td");
+      tdTime.textContent = s.time_hhmm;
+
+      const tdPortions = document.createElement("td");
+      tdPortions.textContent = `${s.portions} ${s.portions === 1 ? "porción" : "porciones"}`;
+
+      const tdState = document.createElement("td");
+      const badge = document.createElement("span");
+      badge.className = `badge ${s.enabled ? "ok" : ""}`;
+      badge.textContent = s.enabled ? "Activo" : "Pausado";
+      tdState.appendChild(badge);
+
+      const tdLast = document.createElement("td");
+      tdLast.textContent = formatDateOnly(s.last_triggered_date);
+
       const tdAct = document.createElement("td");
+      const actWrap = document.createElement("div");
+      actWrap.className = "actions-cell";
+
       const btnToggle = document.createElement("button");
-      btnToggle.className = "secondary";
-      btnToggle.textContent = s.enabled ? "Desactivar" : "Activar";
-      btnToggle.onclick = async () => {
+      btnToggle.type = "button";
+      btnToggle.className = "secondary sm";
+      btnToggle.textContent = s.enabled ? "Pausar" : "Activar";
+      btnToggle.addEventListener("click", async () => {
         try {
-          await api(`/api/schedules/${s.id}`, { method: "PUT", body: JSON.stringify({ enabled: !s.enabled }) });
+          await api(`/api/schedules/${s.id}`, {
+            method: "PUT",
+            body: JSON.stringify({ enabled: !s.enabled }),
+          });
           await loadSchedules();
-          await refreshStatus();
-          notify("Horario actualizado.");
-        } catch (err) { notify(err.message, true); }
-      };
+          refreshStatus();
+          notify(s.enabled ? `Horario ${s.time_hhmm} pausado.` : `Horario ${s.time_hhmm} activado.`);
+        } catch (err) {
+          notify(err.message, true);
+        }
+      });
+
       const btnDel = document.createElement("button");
-      btnDel.className = "danger";
-      btnDel.style.marginLeft = "6px";
+      btnDel.type = "button";
+      btnDel.className = "danger-soft sm";
       btnDel.textContent = "Eliminar";
-      btnDel.onclick = async () => {
+      btnDel.addEventListener("click", async () => {
         try {
           await api(`/api/schedules/${s.id}`, { method: "DELETE" });
           await loadSchedules();
-          await refreshStatus();
-          notify("Horario eliminado.");
-        } catch (err) { notify(err.message, true); }
-      };
-      tdAct.append(btnToggle, btnDel);
-      tr.appendChild(tdAct);
+          refreshStatus();
+          notify(`Horario ${s.time_hhmm} eliminado.`);
+        } catch (err) {
+          notify(err.message, true);
+        }
+      });
+
+      actWrap.append(btnToggle, btnDel);
+      tdAct.appendChild(actWrap);
+      tr.append(tdTime, tdPortions, tdState, tdLast, tdAct);
       tbody.appendChild(tr);
     }
   } catch (err) {
-    notify(`Error cargando horarios: ${err.message}`, true);
+    notify(`No se pudieron cargar los horarios: ${err.message}`, true);
   }
 }
 
-async function loadHistory() {
+document.getElementById("schedule-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const time_hhmm = document.getElementById("sched-time").value;
+  const portions = parseInt(document.getElementById("sched-portions").value, 10);
   try {
-    const { events } = await api("/api/history?limit=25");
-    const tbody = document.getElementById("history-body");
-    tbody.innerHTML = "";
-    if (!events.length) {
-      const tr = document.createElement("tr");
-      const td = document.createElement("td");
-      td.colSpan = 6;
-      td.textContent = "Sin eventos registrados.";
-      tr.appendChild(td);
-      tbody.appendChild(tr);
-      return;
-    }
-    for (const ev of events) {
-      const tr = document.createElement("tr");
-      for (const v of [ev.timestamp, ev.source, String(ev.portions), String(ev.steps), ev.status, ev.detail || ""]) {
-        const td = document.createElement("td");
-        td.textContent = v;
-        tr.appendChild(td);
-      }
-      tbody.appendChild(tr);
-    }
+    await api("/api/schedules", {
+      method: "POST",
+      body: JSON.stringify({ time_hhmm, portions, enabled: true }),
+    });
+    e.target.reset();
+    document.getElementById("sched-portions").value = "1";
+    await loadSchedules();
+    refreshStatus();
+    notify(`Horario ${time_hhmm} agregado.`);
   } catch (err) {
-    notify(`Error cargando historial: ${err.message}`, true);
+    notify(err.message, true);
   }
-}
+});
 
-async function loadMedia() {
+// --- Galería (auto-refresco sin interrumpir reproducción activa de video) ---
+async function loadMedia(force = false) {
   try {
     const type = document.getElementById("media-filter").value;
     const qs = type ? `?limit=50&type=${encodeURIComponent(type)}` : "?limit=50";
     const { items } = await api(`/api/media${qs}`);
     const gallery = document.getElementById("media-gallery");
+    if (!force && Array.from(gallery.querySelectorAll("video")).some((v) => !v.paused && !v.ended)) {
+      return;
+    }
+    const sig = `${type}|${items.map((i) => i.id).join(",")}`;
+    if (!force && sig === lastMediaSig) return;
+    lastMediaSig = sig;
+
     gallery.innerHTML = "";
+
     if (!items.length) {
       const p = document.createElement("p");
-      p.textContent = "Sin capturas registradas.";
+      p.className = "empty-state";
+      p.textContent = "Todavía no hay fotos ni videos guardados.";
       gallery.appendChild(p);
       return;
     }
+
     for (const item of items) {
-      const card = document.createElement("div");
+      const card = document.createElement("article");
       card.className = "media-card";
+
       if (item.media_type === "video") {
         const vid = document.createElement("video");
         vid.src = item.url;
@@ -327,126 +1487,220 @@ async function loadMedia() {
       } else {
         const img = document.createElement("img");
         img.src = item.url;
-        img.alt = item.filename;
+        img.alt = `Foto del ${formatDateTime(item.timestamp)}`;
         img.loading = "lazy";
         card.appendChild(img);
       }
-      const meta = document.createElement("div");
-      meta.className = "media-meta";
-      const info = document.createElement("div");
+
+      const body = document.createElement("div");
+      body.className = "media-body";
+
       const ts = document.createElement("div");
-      ts.textContent = item.timestamp;
-      const badge = document.createElement("span");
-      badge.className = "badge";
-      badge.textContent = `${item.trigger} · ${item.media_type}`;
-      info.append(ts, badge);
+      ts.className = "media-time";
+      ts.textContent = formatDateTime(item.timestamp);
+
+      const badges = document.createElement("div");
+      badges.className = "media-badges";
+
+      const bTrig = document.createElement("span");
+      bTrig.className = `badge ${item.trigger === "ir" ? "accent" : ""}`;
+      bTrig.textContent = friendlyTrigger(item.trigger);
+
+      const bType = document.createElement("span");
+      bType.className = "badge";
+      bType.textContent = item.media_type === "video"
+        ? (item.duration_s ? `Video · ${Math.round(item.duration_s)} s` : "Video")
+        : "Foto";
+
+      badges.append(bTrig, bType);
+
+      const actions = document.createElement("div");
+      actions.className = "media-actions";
+
+      const linkDl = document.createElement("a");
+      linkDl.className = "btn secondary sm";
+      linkDl.href = `${item.url}?download=1`;
+      linkDl.setAttribute("download", item.filename);
+      linkDl.textContent = "Descargar";
 
       const btnDel = document.createElement("button");
-      btnDel.className = "danger";
+      btnDel.type = "button";
+      btnDel.className = "danger-soft sm";
       btnDel.textContent = "Borrar";
-      btnDel.onclick = async () => {
+      btnDel.addEventListener("click", async () => {
         try {
           await api(`/api/media/${item.id}`, { method: "DELETE" });
-          await loadMedia();
+          await loadMedia(true);
           notify("Captura eliminada.");
-        } catch (err) { notify(err.message, true); }
-      };
-      meta.append(info, btnDel);
-      card.appendChild(meta);
+        } catch (err) {
+          notify(err.message, true);
+        }
+      });
+
+      actions.append(linkDl, btnDel);
+      body.append(ts, badges, actions);
+      card.appendChild(body);
       gallery.appendChild(card);
     }
   } catch (err) {
-    notify(`Error cargando galería: ${err.message}`, true);
+    if (force) notify(`No se pudo cargar la galería: ${err.message}`, true);
   }
 }
 
-document.getElementById("btn-dispense").onclick = async () => {
-  const portions = parseInt(document.getElementById("dispense-portions").value, 10);
-  try {
-    const res = await api("/api/dispense", { method: "POST", body: JSON.stringify({ portions }) });
-    notify(`Dispensando ${res.steps} pasos (${res.portions} porc.).`);
-    refreshStatus();
-    loadHistory();
-  } catch (err) { notify(err.message, true); }
-};
+document.getElementById("media-filter").addEventListener("change", () => loadMedia(true));
 
-document.getElementById("btn-unjam").onclick = async () => {
-  try {
-    const res = await api("/api/unjam", { method: "POST", body: JSON.stringify({}) });
-    notify(`Destrabe iniciado (${res.wiggle_steps} pasos).`);
-    refreshStatus();
-    loadHistory();
-  } catch (err) { notify(err.message, true); }
-};
-
-document.getElementById("btn-stop").onclick = async () => {
-  try {
-    const res = await api("/api/stop", { method: "POST", body: JSON.stringify({}) });
-    notify(`Motor detenido (pasos cancelados: ${res.steps_cancelled}).`);
-    refreshStatus();
-  } catch (err) { notify(err.message, true); }
-};
-
-document.getElementById("btn-capture").onclick = async () => {
+document.getElementById("btn-capture").addEventListener("click", async () => {
+  const btn = document.getElementById("btn-capture");
+  btn.disabled = true;
+  setLocalAction("Capturando desde cámara...", 4000);
   try {
     const res = await api("/api/media/capture", { method: "POST", body: JSON.stringify({}) });
-    notify(`Captura guardada: ${res.item.filename}`);
-    loadMedia();
-  } catch (err) { notify(err.message, true); }
-};
+    notify(isDebug() && res.item ? `Captura guardada: ${res.item.filename}` : "Captura guardada.");
+    await loadMedia(true);
+    refreshStatus();
+  } catch (err) {
+    notify(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
-document.getElementById("btn-mock-ir").onclick = async () => {
+// --- Historial (auto-refresco periódico) ---
+async function loadHistory(force = false) {
+  try {
+    const { events } = await api("/api/history?limit=25");
+    const sig = events.map((ev) => `${ev.id}:${ev.status}`).join(",");
+    if (!force && sig === lastHistorySig) return;
+    lastHistorySig = sig;
+
+    const tbody = document.getElementById("history-body");
+    tbody.innerHTML = "";
+
+    if (!events.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.className = "empty-row";
+      td.textContent = "Todavía no hay comidas registradas.";
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+      return;
+    }
+
+    for (const ev of events) {
+      const tr = document.createElement("tr");
+
+      const tdTime = document.createElement("td");
+      tdTime.textContent = formatDateTime(ev.timestamp);
+
+      const tdSource = document.createElement("td");
+      tdSource.textContent = friendlySource(ev.source);
+
+      const tdPortions = document.createElement("td");
+      tdPortions.textContent = formatPortions(ev.portions);
+
+      const tdSteps = document.createElement("td");
+      tdSteps.className = "debug-only";
+      tdSteps.textContent = String(ev.steps ?? 0);
+
+      const tdStatus = document.createElement("td");
+      const st = friendlyStatus(ev.status);
+      const badge = document.createElement("span");
+      badge.className = `badge ${st.cls}`;
+      badge.textContent = st.text;
+      tdStatus.appendChild(badge);
+
+      const tdDetail = document.createElement("td");
+      tdDetail.textContent = ev.detail || "-";
+
+      tr.append(tdTime, tdSource, tdPortions, tdSteps, tdStatus, tdDetail);
+      tbody.appendChild(tr);
+    }
+  } catch (err) {
+    if (force) notify(`No se pudo cargar el historial: ${err.message}`, true);
+  }
+}
+
+// --- Acciones rápidas y mock IR ---
+document.getElementById("btn-dispense").addEventListener("click", async () => {
+  const portions = parseInt(document.getElementById("dispense-portions").value, 10);
+  setLocalAction(`Enviando dispensado (${portions} porc.)...`, 3000);
+  try {
+    const res = await api("/api/dispense", { method: "POST", body: JSON.stringify({ portions }) });
+    setLocalAction(`Dispensando ${res.steps} pasos (${res.portions} porc.)`, 4000);
+    if (isDebug()) {
+      notify(`Dispensando ${res.steps} pasos (${res.portions} porc.).`);
+    } else {
+      notify(`Sirviendo ${portions} ${portions === 1 ? "porción" : "porciones"}...`);
+    }
+    refreshStatus();
+    loadHistory(true);
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+document.getElementById("btn-unjam").addEventListener("click", async () => {
+  setLocalAction("Destrabando dosificador...", 3000);
+  try {
+    const res = await api("/api/unjam", { method: "POST", body: JSON.stringify({}) });
+    const wiggle = res.wiggle_steps ?? res.steps ?? 0;
+    setLocalAction(`Destrabando (${wiggle} pasos)`, 4000);
+    if (isDebug()) {
+      notify(`Destrabe iniciado (${wiggle} pasos).`);
+    } else {
+      notify("Destrabando el dosificador...");
+    }
+    refreshStatus();
+    loadHistory(true);
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+document.getElementById("btn-stop").addEventListener("click", async () => {
+  setLocalAction("Deteniendo motor...", 2500);
+  try {
+    const res = await api("/api/stop", { method: "POST", body: JSON.stringify({}) });
+    setLocalAction("En espera", 0);
+    if (isDebug()) {
+      notify(`Motor detenido (pasos cancelados: ${res.steps_cancelled ?? 0}).`);
+    } else {
+      notify("Comedero detenido.");
+    }
+    refreshStatus();
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
+
+document.getElementById("btn-mock-ir").addEventListener("click", async () => {
+  setLocalAction("Simulando detección IR...", 3000);
   try {
     await api("/api/mock/ir", { method: "POST", body: JSON.stringify({}) });
     notify("Detección IR simulada.");
-    setTimeout(() => { refreshStatus(); loadMedia(); }, 800);
-  } catch (err) { notify(err.message, true); }
-};
+    setTimeout(() => {
+      refreshStatus();
+      loadMedia();
+    }, 800);
+  } catch (err) {
+    notify(err.message, true);
+  }
+});
 
-document.getElementById("config-form").onsubmit = async (e) => {
-  e.preventDefault();
-  const f = e.target.elements;
-  const payload = {
-    steps_per_portion: parseInt(f.steps_per_portion.value, 10),
-    step_interval_us: parseInt(f.step_interval_us.value, 10),
-    capture_mode: f.capture_mode.value,
-    video_duration_s: parseInt(f.video_duration_s.value, 10),
-    ir_cooldown_s: parseInt(f.ir_cooldown_s.value, 10),
-    max_media_files: parseInt(f.max_media_files.value, 10),
-    interval_enabled: f.interval_enabled.value === "1",
-    interval_minutes: parseInt(f.interval_minutes.value, 10),
-    interval_portions: parseInt(f.interval_portions.value, 10),
-  };
-  try {
-    const res = await api("/api/config", { method: "PUT", body: JSON.stringify(payload) });
-    notify(`Configuración guardada (Arduino sync: ${res.arduino_synced ? "sí" : "no"}).`);
-  } catch (err) { notify(err.message, true); }
-};
-
-document.getElementById("schedule-form").onsubmit = async (e) => {
-  e.preventDefault();
-  const time_hhmm = document.getElementById("sched-time").value;
-  const portions = parseInt(document.getElementById("sched-portions").value, 10);
-  try {
-    await api("/api/schedules", { method: "POST", body: JSON.stringify({ time_hhmm, portions, enabled: true }) });
-    e.target.reset();
-    document.getElementById("sched-portions").value = "1";
-    await loadSchedules();
-    await refreshStatus();
-    notify(`Horario ${time_hhmm} agregado.`);
-  } catch (err) { notify(err.message, true); }
-};
-
-document.getElementById("btn-refresh-history").onclick = loadHistory;
-document.getElementById("btn-refresh-media").onclick = loadMedia;
-document.getElementById("media-filter").onchange = loadMedia;
-
+// Arranque inicial y actualización periódica
+updateVideoDurationState();
 refreshStatus();
 loadConfig();
 loadSchedules();
-loadHistory();
-loadMedia();
+loadHistory(true);
+loadMedia(true);
+
 setInterval(refreshStatus, 3000);
+setInterval(() => {
+  loadMedia();
+  loadHistory();
+}, 5000);
 </script>
 </body>
 </html>

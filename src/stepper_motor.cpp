@@ -149,11 +149,12 @@ void stepper_loop(void) {
             if (rem == 0) {
                 write_coils(0);
             } else {
+                // Sentido invertido por orientacion de la helice del sinfin
                 if (rem > 0) {
-                    s_phase = (uint8_t)((s_phase + 1U) & 0x07U);
+                    s_phase = (uint8_t)((s_phase - 1U) & 0x07U);
                     rem--;
                 } else {
-                    s_phase = (uint8_t)((s_phase - 1U) & 0x07U);
+                    s_phase = (uint8_t)((s_phase + 1U) & 0x07U);
                     rem++;
                 }
                 ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {

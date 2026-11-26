@@ -1,4 +1,4 @@
-"""Protocolo binario I2C (Contrato 2) — framing, byte stuffing y empaquetado Big-Endian."""
+"""Protocolo binario I2C (Contrato 2) — framing [LEN][TYPE][PAYLOAD] y empaquetado Big-Endian."""
 
 from dataclasses import dataclass
 import struct
@@ -6,17 +6,10 @@ from typing import Dict, Tuple
 
 DEFAULT_SLAVE_ADDR: int = 0x08
 DEFAULT_I2C_BUS: int = 1
-DEFAULT_RX_LEN: int = 24
+DEFAULT_RX_LEN: int = 16
 DEFAULT_DELAY_S: float = 0.04
 PROTOCOL_VERSION: int = 0x01
 MAX_FRAME_BYTES: int = 32
-
-# Delimitadores de trama y byte stuffing
-START_BYTE: int = 0x7E
-END_BYTE: int = 0x7F
-ESC_BYTE: int = 0x7D
-ESC_XOR: int = 0x20
-RESERVED_BYTES = frozenset({START_BYTE, END_BYTE, ESC_BYTE})
 
 # Comandos (RPi -> Arduino)
 CMD_GET_STATUS: int = 0x10
@@ -53,6 +46,7 @@ ERR_UNKNOWN_CMD: int = 0x03
 ERR_INVALID_FRAME: int = 0x04
 
 # Rangos válidos del contrato
+STEPS_PER_REVOLUTION: int = 4096
 MIN_ABS_STEPS: int = 1
 MAX_ABS_STEPS: int = 204800
 DEFAULT_UNJAM_STEPS: int = 512
@@ -61,7 +55,7 @@ MAX_UNJAM_STEPS: int = 4096
 DEFAULT_MANUAL_STEPS: int = 4096
 MIN_MANUAL_STEPS: int = 256
 MAX_MANUAL_STEPS: int = 40960
-DEFAULT_STEP_INTERVAL_US: int = 2000
+DEFAULT_STEP_INTERVAL_US: int = 1000
 MIN_STEP_INTERVAL_US: int = 1000
 MAX_STEP_INTERVAL_US: int = 10000
 
@@ -187,90 +181,49 @@ def decode_error_payload(payload: bytes) -> Tuple[int, int]:
 
 
 def empaquetar_trama(msg_type: int, payload: bytes = b"") -> bytes:
-    """Construye trama [START][SIZE][TYPE][PAYLOAD][END] con byte stuffing."""
+    """Construye trama [LEN][TYPE][PAYLOAD] donde LEN = 2 + len(payload)."""
     if not (0 <= msg_type <= 0xFF):
         raise ValueError(f"msg_type fuera de rango de byte: {msg_type}")
 
     payload_bytes = bytes(payload)
-    logical_size = 4 + len(payload_bytes)
-    if logical_size > 0xFF:
-        raise ValueError(f"Payload demasiado grande: SIZE={logical_size}")
+    frame_len = 2 + len(payload_bytes)
+    if frame_len > MAX_FRAME_BYTES:
+        raise ValueError(f"Payload demasiado grande: LEN={frame_len} > {MAX_FRAME_BYTES}")
 
-    out = bytearray((START_BYTE,))
-
-    def append_escaped(b: int) -> None:
-        if b in RESERVED_BYTES:
-            out.append(ESC_BYTE)
-            out.append(b ^ ESC_XOR)
-        else:
-            out.append(b)
-
-    append_escaped(logical_size)
-    append_escaped(msg_type)
-    for b in payload_bytes:
-        append_escaped(b)
-
-    out.append(END_BYTE)
-    return bytes(out)
+    return bytes((frame_len, msg_type)) + payload_bytes
 
 
-def decodificar_trama(in_buf: bytes) -> DecodedPacket:
-    """Decodifica trama I2C validando delimitadores, escapes y SIZE == 4 + len(payload)."""
-    raw = bytearray()
-    escape_active = False
-    in_frame = False
-    found_end = False
+def decodificar_trama(in_buf: bytes, exact_len: bool = False) -> DecodedPacket:
+    """Decodifica trama I2C [LEN][TYPE][PAYLOAD] validando LEN y longitud del buffer."""
+    if len(in_buf) < 2:
+        return DecodedPacket(0, 0, b"", False, "Trama demasiado corta (< 2 bytes)")
 
-    for b in in_buf:
-        if b == START_BYTE:
-            raw.clear()
-            escape_active = False
-            in_frame = True
-            continue
-
-        if not in_frame:
-            continue
-
-        if b == END_BYTE:
-            found_end = True
-            break
-
-        if b == ESC_BYTE:
-            if escape_active:
-                return DecodedPacket(0, 0, b"", False, "Secuencia de escape doble inválida")
-            escape_active = True
-            continue
-
-        if escape_active:
-            b ^= ESC_XOR
-            escape_active = False
-
-        raw.append(b)
-
-    if not in_frame:
-        return DecodedPacket(0, 0, b"", False, "No se encontró delimitador de inicio (0x7E)")
-
-    if not found_end:
-        return DecodedPacket(0, 0, b"", False, "No se encontró delimitador de fin (0x7F)")
-
-    if escape_active:
-        return DecodedPacket(0, 0, b"", False, "Secuencia de escape incompleta antes de END")
-
-    if len(raw) < 2:
-        return DecodedPacket(0, 0, b"", False, "Trama demasiado corta (faltan SIZE o TYPE)")
-
-    logical_size = raw[0]
-    msg_type = raw[1]
-    payload = bytes(raw[2:])
-    expected_size = 4 + len(payload)
-
-    if logical_size != expected_size:
+    frame_len = in_buf[0]
+    if not (2 <= frame_len <= MAX_FRAME_BYTES):
         return DecodedPacket(
-            logical_size,
-            msg_type,
-            payload,
+            frame_len,
+            in_buf[1],
+            b"",
             False,
-            f"Error de longitud: SIZE={logical_size}, esperado={expected_size}",
+            f"Longitud de trama inválida: LEN={frame_len} (válido 2..{MAX_FRAME_BYTES})",
         )
 
-    return DecodedPacket(logical_size, msg_type, payload, True)
+    if exact_len:
+        if len(in_buf) != frame_len:
+            return DecodedPacket(
+                frame_len,
+                in_buf[1],
+                b"",
+                False,
+                f"Longitud exacta requerida: LEN={frame_len}, recibidos={len(in_buf)}",
+            )
+    elif len(in_buf) < frame_len:
+        return DecodedPacket(
+            frame_len,
+            in_buf[1],
+            b"",
+            False,
+            f"Trama truncada: LEN={frame_len}, recibidos={len(in_buf)}",
+        )
+
+    return DecodedPacket(frame_len, in_buf[1], bytes(in_buf[2:frame_len]), True)

@@ -63,9 +63,20 @@ class TestProtocolFraming(unittest.TestCase):
         for msg_type, payload in cases:
             with self.subTest(msg_type=hex(msg_type), payload=payload.hex()):
                 frame = proto.empaquetar_trama(msg_type, payload)
-                self.assertEqual(frame[0], proto.START_BYTE)
-                self.assertEqual(frame[-1], proto.END_BYTE)
+                expected_len = 2 + len(payload)
+                self.assertEqual(len(frame), expected_len)
+                self.assertEqual(frame[0], expected_len)
+                self.assertEqual(frame[1], msg_type)
+                self.assertEqual(frame[2:], payload)
+                self.assertLessEqual(len(frame), proto.DEFAULT_RX_LEN)
                 self.assertLessEqual(len(frame), proto.MAX_FRAME_BYTES)
+
+                # Exact-length decode (Arduino Wire.onReceive semantics)
+                decoded_exact = proto.decodificar_trama(frame, exact_len=True)
+                self.assertTrue(decoded_exact.valid, decoded_exact.error)
+                self.assertEqual(decoded_exact.type, msg_type)
+                self.assertEqual(decoded_exact.payload, payload)
+                self.assertEqual(decoded_exact.size, expected_len)
 
                 # Simulate trailing 0xFF padding from Wire.requestFrom / I2C read
                 padded = frame + b"\xff" * 8
@@ -73,66 +84,61 @@ class TestProtocolFraming(unittest.TestCase):
                 self.assertTrue(decoded.valid, decoded.error)
                 self.assertEqual(decoded.type, msg_type)
                 self.assertEqual(decoded.payload, payload)
-                self.assertEqual(decoded.size, 4 + len(payload))
+                self.assertEqual(decoded.size, expected_len)
 
-    def test_reserved_bytes_stuffing_and_worst_case_size(self) -> None:
-        # Payload made exclusively of reserved bytes (0x7E, 0x7F, 0x7D)
-        payload = bytes((proto.START_BYTE, proto.END_BYTE, proto.ESC_BYTE) * 2)
+    def test_raw_special_bytes_pass_verbatim_without_escaping(self) -> None:
+        raw_bytes = bytes((0x7E, 0x7F, 0x7D, 0x00, 0xFF))
+        payload = raw_bytes * 2  # 10 bytes => LEN=12 <= DEFAULT_RX_LEN (16)
         frame = proto.empaquetar_trama(proto.RSP_STATUS, payload)
 
-        # No unescaped START or END inside the frame body
-        body = frame[1:-1]
-        self.assertNotIn(proto.START_BYTE, body)
-        self.assertNotIn(proto.END_BYTE, body)
-        # 6-byte worst-case response must always fit in DEFAULT_RX_LEN (24) and MAX_FRAME_BYTES (32)
+        self.assertEqual(len(frame), 2 + len(payload))
+        self.assertEqual(frame[0], 2 + len(payload))
+        self.assertEqual(frame[1], proto.RSP_STATUS)
+        self.assertEqual(frame[2:], payload)
         self.assertLessEqual(len(frame), proto.DEFAULT_RX_LEN)
         self.assertLessEqual(len(frame), proto.MAX_FRAME_BYTES)
 
-        decoded = proto.decodificar_trama(frame)
+        decoded = proto.decodificar_trama(frame + b"\xff" * 4)
         self.assertTrue(decoded.valid, decoded.error)
         self.assertEqual(decoded.type, proto.RSP_STATUS)
         self.assertEqual(decoded.payload, payload)
 
-        # Reserved byte in msg_type itself also round-trips cleanly
-        for reserved in (proto.START_BYTE, proto.END_BYTE, proto.ESC_BYTE):
-            f = proto.empaquetar_trama(reserved, bytes((reserved,)))
-            d = proto.decodificar_trama(f)
+        for byte_val in (0x7E, 0x7F, 0x7D, 0x00, 0xFF):
+            f = proto.empaquetar_trama(byte_val, bytes((byte_val,)))
+            self.assertEqual(f, bytes((3, byte_val, byte_val)))
+            d = proto.decodificar_trama(f, exact_len=True)
             self.assertTrue(d.valid, d.error)
-            self.assertEqual(d.type, reserved)
-            self.assertEqual(d.payload, bytes((reserved,)))
+            self.assertEqual(d.type, byte_val)
+            self.assertEqual(d.payload, bytes((byte_val,)))
 
-    def test_corrupt_size_and_malformed_frames_rejected(self) -> None:
-        # SIZE too large (claims 6 instead of 4)
-        bad_size_high = bytes((proto.START_BYTE, 6, proto.CMD_PING, proto.END_BYTE))
-        self.assertFalse(proto.decodificar_trama(bad_size_high).valid)
+    def test_malformed_and_invalid_len_frames_rejected(self) -> None:
+        # Empty and < 2 bytes
+        self.assertFalse(proto.decodificar_trama(b"").valid)
+        self.assertFalse(proto.decodificar_trama(b"\x02").valid)
 
-        # SIZE too small (claims 4 for 2-byte payload)
-        bad_size_low = bytes((proto.START_BYTE, 4, proto.RSP_ERROR, 0x11, 0x01, proto.END_BYTE))
-        self.assertFalse(proto.decodificar_trama(bad_size_low).valid)
+        # Bus stuck low (0x00) or floating high (0xFF)
+        self.assertFalse(proto.decodificar_trama(b"\x00" * proto.DEFAULT_RX_LEN).valid)
+        self.assertFalse(proto.decodificar_trama(b"\xff" * proto.DEFAULT_RX_LEN).valid)
 
-        # Missing START
-        self.assertFalse(proto.decodificar_trama(bytes((4, proto.CMD_PING, proto.END_BYTE))).valid)
-        # Missing END
-        self.assertFalse(proto.decodificar_trama(bytes((proto.START_BYTE, 4, proto.CMD_PING))).valid)
-        # Dangling ESC before END
-        dangling_esc = bytes((proto.START_BYTE, 5, proto.CMD_PING, proto.ESC_BYTE, proto.END_BYTE))
-        self.assertFalse(proto.decodificar_trama(dangling_esc).valid)
-        # Double ESC
-        double_esc = bytes(
-            (proto.START_BYTE, 5, proto.CMD_PING, proto.ESC_BYTE, proto.ESC_BYTE, proto.END_BYTE)
-        )
-        self.assertFalse(proto.decodificar_trama(double_esc).valid)
-        # Truncated frame (< 2 bytes inside delimiters)
-        self.assertFalse(proto.decodificar_trama(bytes((proto.START_BYTE, 4, proto.END_BYTE))).valid)
-        self.assertFalse(proto.decodificar_trama(bytes((proto.START_BYTE, proto.END_BYTE))).valid)
+        # LEN < 2
+        self.assertFalse(proto.decodificar_trama(bytes((0, proto.CMD_PING))).valid)
+        self.assertFalse(proto.decodificar_trama(bytes((1, proto.CMD_PING))).valid)
 
-    def test_resync_after_garbage_and_second_start(self) -> None:
-        valid = proto.empaquetar_trama(proto.CMD_PING)
-        noisy = b"\x00\xff" + bytes((proto.START_BYTE, 0x99)) + valid + b"\xff\xff"
-        decoded = proto.decodificar_trama(noisy)
-        self.assertTrue(decoded.valid, decoded.error)
-        self.assertEqual(decoded.type, proto.CMD_PING)
-        self.assertEqual(decoded.payload, b"")
+        # LEN > MAX_FRAME_BYTES (32)
+        self.assertFalse(proto.decodificar_trama(bytes((33, proto.CMD_PING)) + b"\x00" * 31).valid)
+
+        # Truncated frame (claims LEN=6, only 3 bytes received)
+        self.assertFalse(proto.decodificar_trama(bytes((6, proto.CMD_PING, 0x01))).valid)
+
+        # exact_len=True rejects trailing bytes (e.g. padding)
+        valid_ping = proto.empaquetar_trama(proto.CMD_PING)
+        self.assertTrue(proto.decodificar_trama(valid_ping + b"\xff", exact_len=False).valid)
+        self.assertFalse(proto.decodificar_trama(valid_ping + b"\xff", exact_len=True).valid)
+        self.assertFalse(proto.decodificar_trama(valid_ping + b"\x00", exact_len=True).valid)
+
+        # Packing payload exceeding MAX_FRAME_BYTES raises ValueError
+        with self.assertRaises(ValueError):
+            proto.empaquetar_trama(proto.CMD_PING, b"\x00" * (proto.MAX_FRAME_BYTES - 1))
 
     def test_big_endian_and_payload_helpers(self) -> None:
         self.assertEqual(proto.unpack_i32(proto.pack_i32(-204800)), -204800)
@@ -175,10 +181,6 @@ class TestCppPythonProtocolParity(unittest.TestCase):
 
         mapping = {
             "SLAVE_ADDR": proto.DEFAULT_SLAVE_ADDR,
-            "START_BYTE": proto.START_BYTE,
-            "END_BYTE": proto.END_BYTE,
-            "ESC_BYTE": proto.ESC_BYTE,
-            "ESC_XOR": proto.ESC_XOR,
             "PROTOCOL_VERSION": proto.PROTOCOL_VERSION,
             "CMD_GET_STATUS": proto.CMD_GET_STATUS,
             "CMD_DISPENSE_STEPS": proto.CMD_DISPENSE_STEPS,
@@ -250,30 +252,34 @@ class TestMockTransportAndController(unittest.TestCase):
         self.assertFalse(st_after.motor_busy)
         self.assertEqual(st_after.steps_remaining, 0)
 
+    def test_default_constants(self) -> None:
+        self.assertEqual(proto.DEFAULT_STEP_INTERVAL_US, 1000)
+        self.assertEqual(proto.STEPS_PER_REVOLUTION, 4096)
+
     def test_unjam_three_phase_sequence(self) -> None:
-        # 100 steps @ 2000us = 0.2s rev + 0.15s pause + 0.2s fwd = 0.55s total
+        # 100 steps @ 1000us (default) = 0.1s rev + 0.15s pause + 0.1s fwd = 0.35s total
         self.assertEqual(self.client.unjam(100), 100)
 
-        # Phase 1: reverse (negative remaining)
-        self.clock.advance(0.1)
+        # Phase 1: reverse (negative remaining) at t=0.05s
+        self.clock.advance(0.05)
         st_rev = self.client.get_status(consume_latch=False)
         self.assertTrue(st_rev.motor_busy)
         self.assertLess(st_rev.steps_remaining, 0)
 
-        # Phase 2: pause (still busy, 0 remaining)
-        self.clock.advance(0.15)
+        # Phase 2: pause (still busy, 0 remaining) at t=0.15s
+        self.clock.advance(0.10)
         st_pause = self.client.get_status(consume_latch=False)
         self.assertTrue(st_pause.motor_busy)
         self.assertEqual(st_pause.steps_remaining, 0)
 
-        # Phase 3: forward (positive remaining)
+        # Phase 3: forward (positive remaining) at t=0.30s
         self.clock.advance(0.15)
         st_fwd = self.client.get_status(consume_latch=False)
         self.assertTrue(st_fwd.motor_busy)
         self.assertGreater(st_fwd.steps_remaining, 0)
 
-        # Done
-        self.clock.advance(0.25)
+        # Done at t=0.40s
+        self.clock.advance(0.10)
         st_idle = self.client.get_status(consume_latch=False)
         self.assertFalse(st_idle.motor_busy)
         self.assertEqual(st_idle.steps_remaining, 0)
@@ -317,6 +323,13 @@ class TestMockTransportAndController(unittest.TestCase):
         self.assertTrue(dec_bad.valid)
         self.assertEqual(dec_bad.type, proto.RSP_ERROR)
         self.assertEqual(proto.decode_error_payload(dec_bad.payload), (0x00, proto.ERR_INVALID_FRAME))
+
+        # Trailing bytes on TX rejected (matches Arduino Wire.onReceive exact length check)
+        raw_trailing = self.transport.send_and_receive(proto.empaquetar_trama(proto.CMD_PING) + b"\xff")
+        dec_trailing = proto.decodificar_trama(raw_trailing)
+        self.assertTrue(dec_trailing.valid)
+        self.assertEqual(dec_trailing.type, proto.RSP_ERROR)
+        self.assertEqual(proto.decode_error_payload(dec_trailing.payload), (0x00, proto.ERR_INVALID_FRAME))
 
         # Controller local validation
         with self.assertRaises(ValueError):

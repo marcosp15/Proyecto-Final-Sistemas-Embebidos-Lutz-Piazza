@@ -281,7 +281,7 @@ class MockArduinoTransport(I2CTransportBase):
         delay_s: float = DEFAULT_DELAY_S,
     ) -> bytes:
         self._update_state()
-        pkt = decodificar_trama(tx_bytes)
+        pkt = decodificar_trama(tx_bytes, exact_len=True)
         if not pkt.valid:
             resp = self._error_frame(0x00, ERR_INVALID_FRAME)
         else:

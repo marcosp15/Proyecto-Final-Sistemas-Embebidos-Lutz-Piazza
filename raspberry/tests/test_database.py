@@ -45,6 +45,9 @@ class TestDatabase(unittest.TestCase):
     def test_settings_defaults_updates_and_validation(self) -> None:
         cfg = db.get_settings(self.db_path)
         self.assertEqual(cfg, db.DEFAULT_SETTINGS)
+        self.assertEqual(cfg["step_interval_us"], 1000)
+        self.assertEqual(cfg["schedule_mode"], "schedules")
+        self.assertIs(cfg["interval_enabled"], False)
 
         updated = db.update_settings(
             self.db_path,
@@ -64,6 +67,7 @@ class TestDatabase(unittest.TestCase):
         self.assertEqual(updated["steps_per_portion"], 8192)
         self.assertEqual(updated["capture_mode"], "video")
         self.assertIs(updated["interval_enabled"], True)
+        self.assertEqual(updated["schedule_mode"], "interval")
         self.assertEqual(updated["last_interval_run_at"], "2026-11-25T10:00:00-03:00")
 
         # Out-of-range and invalid types rejected atomically (no partial writes)
@@ -75,6 +79,7 @@ class TestDatabase(unittest.TestCase):
             {"step_interval_us": 500},
             {"step_interval_us": 20000},
             {"capture_mode": "gif"},
+            {"schedule_mode": "always"},
             {"video_duration_s": 1},
             {"video_duration_s": 16},
             {"ir_cooldown_s": 4},
@@ -95,6 +100,52 @@ class TestDatabase(unittest.TestCase):
 
         # Value must remain 8192 (atomic rollback)
         self.assertEqual(db.get_setting(self.db_path, "steps_per_portion"), 8192)
+
+    def test_schedule_mode_and_interval_enabled_sync(self) -> None:
+        # schedule_mode -> interval_enabled
+        cfg = db.update_settings(self.db_path, {"schedule_mode": "interval"})
+        self.assertEqual(cfg["schedule_mode"], "interval")
+        self.assertIs(cfg["interval_enabled"], True)
+
+        cfg = db.update_settings(self.db_path, {"schedule_mode": "manual"})
+        self.assertEqual(cfg["schedule_mode"], "manual")
+        self.assertIs(cfg["interval_enabled"], False)
+
+        # Disabling interval_enabled while in manual preserves manual mode
+        cfg = db.update_settings(self.db_path, {"interval_enabled": False})
+        self.assertEqual(cfg["schedule_mode"], "manual")
+        self.assertIs(cfg["interval_enabled"], False)
+
+        # Legacy interval_enabled=True activates interval mode
+        cfg = db.update_settings(self.db_path, {"interval_enabled": True})
+        self.assertEqual(cfg["schedule_mode"], "interval")
+        self.assertIs(cfg["interval_enabled"], True)
+
+        # Legacy interval_enabled=False from interval switches back to schedules
+        cfg = db.update_settings(self.db_path, {"interval_enabled": False})
+        self.assertEqual(cfg["schedule_mode"], "schedules")
+        self.assertIs(cfg["interval_enabled"], False)
+
+        # Explicit schedule_mode takes precedence over conflicting interval_enabled
+        cfg = db.update_settings(
+            self.db_path, {"schedule_mode": "schedules", "interval_enabled": True}
+        )
+        self.assertEqual(cfg["schedule_mode"], "schedules")
+        self.assertIs(cfg["interval_enabled"], False)
+
+        # Legacy DB upgrade: interval_enabled='1' without schedule_mode row
+        legacy_db = str(Path(self._tmpdir.name) / "legacy.db")
+        conn = sqlite3.connect(legacy_db)
+        try:
+            conn.executescript(db.SCHEMA_SQL)
+            conn.execute("INSERT INTO settings (key, value) VALUES ('interval_enabled', '1');")
+            conn.commit()
+        finally:
+            conn.close()
+        db.init_db(legacy_db)
+        legacy_cfg = db.get_settings(legacy_db)
+        self.assertEqual(legacy_cfg["schedule_mode"], "interval")
+        self.assertIs(legacy_cfg["interval_enabled"], True)
 
     def test_schedules_crud_and_validation(self) -> None:
         s1 = db.create_schedule(self.db_path, "18:30", 2, enabled=True)

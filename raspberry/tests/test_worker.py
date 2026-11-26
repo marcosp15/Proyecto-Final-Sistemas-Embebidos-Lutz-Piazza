@@ -220,20 +220,89 @@ class TestFeederWorker(unittest.TestCase):
         self.assertEqual(events[0]["steps"], 4096)
         self.assertEqual(events[0]["status"], "ok")
 
-    def test_scheduled_dispense_exceeding_max_steps_logs_error_without_aborting(self) -> None:
+    def test_schedule_mode_exclusivity_and_next_schedule(self) -> None:
+        # Seed a fixed schedule at 08:30 and configure interval every 10 min (3 portions)
+        sched = db.create_schedule(self.db_path, "08:30", 2, enabled=True)
+        past_iso = (self.clock.now() - timedelta(minutes=15)).isoformat(timespec="seconds")
+
+        # 1) schedule_mode == "schedules": fixed fires, overdue interval must NOT fire
         db.update_settings(
             self.db_path,
-            {"steps_per_portion": 40960, "interval_enabled": True, "last_interval_run_at": ""},
+            {
+                "schedule_mode": "schedules",
+                "interval_minutes": 10,
+                "interval_portions": 3,
+                "last_interval_run_at": past_iso,
+            },
         )
-        db.create_schedule(self.db_path, "08:29", 10, enabled=True)  # 409600 > MAX_ABS_STEPS (204800)
-        self.worker.run_once()
+        nxt_sched = compute_next_schedule(self.db_path, self.clock.now())
+        self.assertIsNotNone(nxt_sched)
+        self.assertEqual(nxt_sched["mode"], "schedules")
+        self.assertEqual(nxt_sched["id"], sched["id"])
 
+        self.clock.advance(60.0)  # 08:30:00
+        self.worker.run_once()
         events = db.list_dispense_events(self.db_path)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0]["source"], "schedule")
-        self.assertEqual(events[0]["status"], "error")
-        # Interval scheduler still ran in the same tick and anchored last_interval_run_at
-        self.assertTrue(db.get_setting(self.db_path, "last_interval_run_at"))
+        self.assertEqual(events[0]["portions"], 2.0)
+
+        # Let motor finish before next scenario
+        self.clock.advance(30.0)  # 08:30:30
+
+        # 2) schedule_mode == "interval": interval fires, fixed schedule at 08:40 must NOT fire
+        db.create_schedule(self.db_path, "08:40", 4, enabled=True)
+        anchor_0830 = datetime(2026, 11, 25, 8, 30, 0, tzinfo=self.clock.now().tzinfo).isoformat(
+            timespec="seconds"
+        )
+        db.update_settings(
+            self.db_path,
+            {
+                "schedule_mode": "interval",
+                "interval_minutes": 10,
+                "interval_portions": 3,
+                "last_interval_run_at": anchor_0830,
+            },
+        )
+        nxt_int = compute_next_schedule(self.db_path, self.clock.now())
+        self.assertIsNotNone(nxt_int)
+        self.assertEqual(nxt_int["mode"], "interval")
+        self.assertEqual(nxt_int["time_hhmm"], "08:40")
+        self.assertEqual(nxt_int["interval_minutes"], 10)
+
+        self.clock.advance(9 * 60 + 30.0)  # 08:40:00
+        self.worker.run_once()
+        events = db.list_dispense_events(self.db_path)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(events[0]["source"], "interval")
+        self.assertEqual(events[0]["portions"], 3.0)
+
+        # Let motor finish before manual mode check
+        self.clock.advance(30.0)  # 08:40:30
+
+        # 3) schedule_mode == "manual": NEITHER fixed schedule nor overdue interval fires
+        db.create_schedule(self.db_path, "08:50", 1, enabled=True)
+        db.update_settings(self.db_path, {"schedule_mode": "manual"})
+        self.assertIsNone(compute_next_schedule(self.db_path, self.clock.now()))
+
+        self.clock.advance(9 * 60 + 30.0)  # 08:50:00 (both 08:50 fixed & 10m interval would be due)
+        self.worker.run_once()
+        self.assertEqual(db.count_dispense_events(self.db_path), 2)
+
+    def test_scheduled_dispense_exceeding_max_steps_logs_error_without_aborting(self) -> None:
+        db.update_settings(
+            self.db_path,
+            {"steps_per_portion": 40960, "schedule_mode": "schedules"},
+        )
+        db.create_schedule(self.db_path, "08:29", 10, enabled=True)  # 409600 > MAX_ABS_STEPS (204800)
+        db.create_schedule(self.db_path, "08:29", 1, enabled=True)  # 40960 <= MAX_ABS_STEPS
+        self.worker.run_once()
+
+        events = db.list_dispense_events(self.db_path)
+        self.assertEqual(len(events), 2)
+        statuses = {e["status"] for e in events}
+        self.assertEqual(statuses, {"error", "ok"})
+        self.assertTrue(all(e["source"] == "schedule" for e in events))
 
     def test_worker_thread_start_stop_lifecycle(self) -> None:
         self.worker.start()

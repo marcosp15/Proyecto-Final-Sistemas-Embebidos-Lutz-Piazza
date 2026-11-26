@@ -1,7 +1,7 @@
 """Hilo de fondo del dispenser: polling I2C, captura IR asíncrona y planificador de comidas."""
 
 from concurrent.futures import Future, ThreadPoolExecutor
-from datetime import datetime
+from datetime import datetime, timedelta
 import logging
 import threading
 import time
@@ -24,12 +24,35 @@ logger = logging.getLogger("service.worker")
 
 
 def compute_next_schedule(db_path: str, now: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
-    """Retorna el próximo horario fijo habilitado (hoy o mañana), o None si no hay activos."""
+    """Retorna la próxima comida programada según schedule_mode, o None si no hay activa."""
+    settings = database.get_settings(db_path)
+    mode = settings["schedule_mode"]
+    if mode == "manual":
+        return None
+
+    current = now or datetime.now().astimezone()
+
+    if mode == "interval":
+        interval_minutes = settings["interval_minutes"]
+        last_raw = settings["last_interval_run_at"]
+        base_dt = current
+        if last_raw:
+            try:
+                base_dt = datetime.fromisoformat(last_raw)
+            except ValueError:
+                base_dt = current
+        next_dt = base_dt + timedelta(minutes=interval_minutes)
+        return {
+            "mode": "interval",
+            "time_hhmm": next_dt.strftime("%H:%M"),
+            "portions": settings["interval_portions"],
+            "interval_minutes": interval_minutes,
+        }
+
     schedules = database.list_schedules(db_path, enabled_only=True)
     if not schedules:
         return None
 
-    current = now or datetime.now().astimezone()
     hhmm = current.strftime("%H:%M")
     today = current.strftime("%Y-%m-%d")
 
@@ -38,6 +61,7 @@ def compute_next_schedule(db_path: str, now: Optional[datetime] = None) -> Optio
             sched["time_hhmm"] == hhmm and sched["last_triggered_date"] != today
         ):
             return {
+                "mode": "schedules",
                 "id": sched["id"],
                 "time_hhmm": sched["time_hhmm"],
                 "portions": sched["portions"],
@@ -45,6 +69,7 @@ def compute_next_schedule(db_path: str, now: Optional[datetime] = None) -> Optio
 
     first = schedules[0]
     return {
+        "mode": "schedules",
         "id": first["id"],
         "time_hhmm": first["time_hhmm"],
         "portions": first["portions"],
@@ -177,9 +202,12 @@ class FeederWorkerThread(threading.Thread):
         if status.ir_latched:
             self._maybe_trigger_ir_capture(settings)
 
-        # 5. Ejecutar planificadores (horarios fijos e intervalo repetitivo)
-        self._run_fixed_schedules(current_dt, current_iso, settings)
-        self._run_interval_schedule(current_dt, current_iso, settings)
+        # 5. Ejecutar planificador exclusivo según schedule_mode
+        mode = settings["schedule_mode"]
+        if mode == "schedules":
+            self._run_fixed_schedules(current_dt, current_iso, settings)
+        elif mode == "interval":
+            self._run_interval_schedule(current_dt, current_iso, settings)
 
     def _maybe_trigger_ir_capture(self, settings: Dict[str, Any]) -> None:
         cooldown_s = settings["ir_cooldown_s"]
@@ -314,7 +342,7 @@ class FeederWorkerThread(threading.Thread):
         current_iso: str,
         settings: Dict[str, Any],
     ) -> None:
-        if not settings["interval_enabled"]:
+        if settings["schedule_mode"] != "interval":
             return
 
         last_run_raw = settings["last_interval_run_at"]

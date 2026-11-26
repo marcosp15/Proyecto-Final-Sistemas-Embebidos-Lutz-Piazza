@@ -1,7 +1,9 @@
 """API REST Flask (Contrato 4) e interfaz web local del dispenser de alimento."""
 
 import logging
+import math
 from pathlib import Path
+import threading
 from typing import Any, Dict, Optional
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -17,6 +19,7 @@ try:
         MAX_ABS_STEPS,
         MAX_UNJAM_STEPS,
         MIN_UNJAM_STEPS,
+        STEPS_PER_REVOLUTION,
     )
     from service import database
     from service.camera import (
@@ -39,6 +42,7 @@ except ImportError:
         MAX_ABS_STEPS,
         MAX_UNJAM_STEPS,
         MIN_UNJAM_STEPS,
+        STEPS_PER_REVOLUTION,
     )
     from . import database
     from .camera import (
@@ -87,6 +91,28 @@ def _is_safe_filename(filename: str) -> bool:
     return True
 
 
+def _format_config_response(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(cfg)
+    out["turns_per_portion"] = round(cfg["steps_per_portion"] / float(STEPS_PER_REVOLUTION), 2)
+    return out
+
+
+def _parse_turns_per_portion(value: Any) -> int:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError("turns_per_portion debe ser un número entre 0.5 y 10.0 en pasos de 0.5")
+    turns = float(value)
+    if not math.isfinite(turns) or not (0.5 <= turns <= 10.0):
+        raise ValueError("turns_per_portion debe estar entre 0.5 y 10.0")
+    doubled = turns * 2.0
+    if abs(doubled - round(doubled)) > 1e-9:
+        raise ValueError("turns_per_portion debe ser múltiplo de 0.5")
+    return int(round(turns * STEPS_PER_REVOLUTION))
+
+
+def _fmt_portions(value: float) -> str:
+    return f"{round(float(value), 2):.2f}".rstrip("0").rstrip(".")
+
+
 def create_app(
     client: ThreadSafeFeederMaster,
     db_path: str,
@@ -96,6 +122,8 @@ def create_app(
     """Fábrica de la aplicación Flask implementando todos los endpoints del Contrato 4."""
     database.init_db(db_path)
     app = Flask(__name__)
+    action_lock = threading.Lock()
+    action_state: Dict[str, Any] = {"kind": "idle", "steps": 0, "portions": 0.0}
 
     @app.route("/", methods=["GET"])
     def index():
@@ -136,11 +164,37 @@ def create_app(
                 }
             )
 
+            if camera.is_capturing:
+                current_action = "Capturando multimedia..."
+            elif arduino_info["motor_busy"]:
+                with action_lock:
+                    kind = action_state["kind"]
+                    tracked_portions = action_state["portions"]
+                steps_rem = abs(arduino_info["steps_remaining"])
+                if kind == "unjam":
+                    current_action = f"Destrabando ({steps_rem} pasos rest.)"
+                else:
+                    if kind == "dispense" and steps_rem > 0 and tracked_portions > 0:
+                        porc_val = tracked_portions
+                    else:
+                        settings = database.get_settings(db_path)
+                        porc_val = steps_rem / float(settings["steps_per_portion"])
+                    current_action = (
+                        f"Dispensando {steps_rem} pasos ({_fmt_portions(porc_val)} porc.)"
+                    )
+            else:
+                with action_lock:
+                    action_state["kind"] = "idle"
+                    action_state["steps"] = 0
+                    action_state["portions"] = 0.0
+                current_action = "En espera"
+
             return (
                 jsonify(
                     {
                         "status": "ok",
                         "mode": "mock" if client.is_mock else "hardware",
+                        "current_action": current_action,
                         "arduino": arduino_info,
                         "worker": worker_info,
                         "camera": {
@@ -159,12 +213,13 @@ def create_app(
     @app.route("/api/config", methods=["GET"])
     def api_get_config():
         try:
-            return jsonify({"status": "ok", "config": database.get_settings(db_path)}), 200
+            cfg = _format_config_response(database.get_settings(db_path))
+            return jsonify({"status": "ok", "config": cfg}), 200
         except Exception as exc:
             logger.exception("Error en GET /api/config: %s", exc)
             return _error_response(str(exc), 500)
 
-    @app.route("/api/config", methods=["PUT"])
+    @app.route("/api/config", methods=["PUT", "POST"])
     def api_put_config():
         data = request.get_json(silent=True)
         if not isinstance(data, dict) or not data:
@@ -173,25 +228,48 @@ def create_app(
         try:
             prev = database.get_settings(db_path)
             updates = dict(data)
+
+            if "turns_per_portion" in updates:
+                derived_steps = _parse_turns_per_portion(updates.pop("turns_per_portion"))
+                if "steps_per_portion" in updates:
+                    raw_steps = updates["steps_per_portion"]
+                    if not _is_strict_int(raw_steps) or raw_steps != derived_steps:
+                        return _error_response(
+                            "turns_per_portion y steps_per_portion entran en conflicto", 400
+                        )
+                updates["steps_per_portion"] = derived_steps
+
             # Si se activa intervalo y no había referencia previa, anclar a ahora
+            transitioning_to_interval = False
+            if "schedule_mode" in updates:
+                transitioning_to_interval = updates["schedule_mode"] == "interval"
+            elif "interval_enabled" in updates:
+                enabling = updates["interval_enabled"]
+                transitioning_to_interval = enabling in (True, 1) or (
+                    isinstance(enabling, str)
+                    and enabling.strip().lower() in ("1", "true", "yes", "on")
+                )
+
             if (
-                "interval_enabled" in updates
-                and not prev["interval_enabled"]
+                transitioning_to_interval
+                and prev["schedule_mode"] != "interval"
                 and "last_interval_run_at" not in updates
             ):
-                enabling = updates["interval_enabled"]
-                if enabling in (True, 1, "1", "true", "True"):
-                    updates["last_interval_run_at"] = database.now_iso()
+                updates["last_interval_run_at"] = database.now_iso()
 
             cfg = database.update_settings(db_path, updates)
         except ValueError as exc:
             return _error_response(str(exc), 400)
         except Exception as exc:
-            logger.exception("Error en PUT /api/config: %s", exc)
+            logger.exception("Error en %s /api/config: %s", request.method, exc)
             return _error_response(str(exc), 500)
 
         arduino_synced = False
-        if "steps_per_portion" in data or "step_interval_us" in data:
+        if (
+            "steps_per_portion" in data
+            or "turns_per_portion" in data
+            or "step_interval_us" in data
+        ):
             try:
                 client.set_config(cfg["steps_per_portion"], cfg["step_interval_us"])
                 arduino_synced = True
@@ -199,7 +277,16 @@ def create_app(
                 logger.warning("Config guardada en BD pero falló sync con Arduino: %s", exc)
                 arduino_synced = False
 
-        return jsonify({"status": "ok", "config": cfg, "arduino_synced": arduino_synced}), 200
+        return (
+            jsonify(
+                {
+                    "status": "ok",
+                    "config": _format_config_response(cfg),
+                    "arduino_synced": arduino_synced,
+                }
+            ),
+            200,
+        )
 
     @app.route("/api/schedules", methods=["GET"])
     def api_list_schedules():
@@ -312,6 +399,10 @@ def create_app(
 
         try:
             accepted = client.dispense_steps(steps, step_interval_us=step_interval_us)
+            with action_lock:
+                action_state["kind"] = "dispense"
+                action_state["steps"] = accepted
+                action_state["portions"] = portions
             event_id = database.add_dispense_event(
                 db_path,
                 source="manual_web",
@@ -370,6 +461,10 @@ def create_app(
 
         try:
             accepted = client.unjam(wiggle_steps=wiggle)
+            with action_lock:
+                action_state["kind"] = "unjam"
+                action_state["steps"] = accepted
+                action_state["portions"] = 0.0
             event_id = database.add_dispense_event(
                 db_path,
                 source="unjam",
@@ -406,6 +501,10 @@ def create_app(
     def api_stop():
         try:
             cancelled = client.stop_motor()
+            with action_lock:
+                action_state["kind"] = "idle"
+                action_state["steps"] = 0
+                action_state["portions"] = 0.0
             return jsonify({"status": "ok", "steps_cancelled": cancelled}), 200
         except FeederI2CError as exc:
             return _error_response(str(exc), 503)
@@ -503,7 +602,8 @@ def create_app(
     def serve_media(filename: str):
         if not _is_safe_filename(filename):
             return _error_response("Archivo no encontrado", 404)
-        return send_from_directory(str(camera.media_dir), filename)
+        is_download = request.args.get("download", "").lower() in ("1", "true", "yes")
+        return send_from_directory(str(camera.media_dir), filename, as_attachment=is_download)
 
     @app.route("/api/media/<int:media_id>", methods=["DELETE"])
     def api_delete_media(media_id: int):
