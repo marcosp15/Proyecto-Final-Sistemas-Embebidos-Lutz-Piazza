@@ -1,7 +1,7 @@
 #include "i2c_handlers.h"
-#include "ir_sensor.h"
 #include "protocol.h"
 #include "stepper_motor.h"
+#include "ultrasonic_sensor.h"
 #include <Wire.h>
 #include <avr/io.h>
 #include <util/atomic.h>
@@ -17,6 +17,7 @@ struct I2CMailbox {
     uint16_t unjam_steps;
     uint32_t cfg_manual_steps;
     uint16_t cfg_step_interval_us;
+    uint16_t cfg_ultrasonic_threshold_cm;
 };
 
 static volatile I2CMailbox s_mailbox = {};
@@ -101,12 +102,12 @@ void onReceiveHandler(int numBytes) {
             if (motor_busy_isr_unsafe()) {
                 statusFlags |= STATUS_MOTOR_BUSY;
             }
-            bool irLatched = consume ? ir_sensor_consume_latched() : ir_sensor_is_latched();
-            if (irLatched) {
-                statusFlags |= STATUS_IR_LATCHED;
+            bool ultrasonicLatched = consume ? ultrasonic_sensor_consume_latched() : ultrasonic_sensor_is_latched();
+            if (ultrasonicLatched) {
+                statusFlags |= STATUS_ULTRASONIC_LATCHED;
             }
-            if (ir_sensor_is_live()) {
-                statusFlags |= STATUS_IR_LIVE;
+            if (ultrasonic_sensor_is_live()) {
+                statusFlags |= STATUS_ULTRASONIC_LIVE;
             }
             bool manualLatched = s_manual_dispense_latched;
             if (consume) {
@@ -116,10 +117,11 @@ void onReceiveHandler(int numBytes) {
                 statusFlags |= STATUS_MANUAL_DISPENSE_LATCHED;
             }
 
-            uint8_t rsp[6];
+            uint8_t rsp[8];
             rsp[0] = statusFlags;
             proto_write_i32_be(&rsp[1], steps_remaining_isr_unsafe());
             rsp[5] = s_last_error;
+            proto_write_u16_be(&rsp[6], ultrasonic_sensor_get_distance_cm());
             s_tx_len = empaquetarTrama(RSP_STATUS, rsp, sizeof(rsp), (uint8_t*)s_tx_buf);
             break;
         }
@@ -208,27 +210,31 @@ void onReceiveHandler(int numBytes) {
         }
 
         case CMD_SET_CONFIG: {
-            if (pkt.payloadLen != 6) {
+            if (pkt.payloadLen != 8) {
                 send_error_reply(CMD_SET_CONFIG, ERR_INVALID_ARG);
                 return;
             }
 
             uint32_t manualSteps = proto_read_u32_be(&pkt.payload[0]);
             uint16_t stepIntervalUs = proto_read_u16_be(&pkt.payload[4]);
+            uint16_t thresholdCm = proto_read_u16_be(&pkt.payload[6]);
             if (manualSteps < CONFIG_MIN_MANUAL_STEPS || manualSteps > CONFIG_MAX_MANUAL_STEPS ||
-                stepIntervalUs < CONFIG_MIN_STEP_US || stepIntervalUs > CONFIG_MAX_STEP_US) {
+                stepIntervalUs < CONFIG_MIN_STEP_US || stepIntervalUs > CONFIG_MAX_STEP_US ||
+                thresholdCm < CONFIG_MIN_THRESHOLD_CM || thresholdCm > CONFIG_MAX_THRESHOLD_CM) {
                 send_error_reply(CMD_SET_CONFIG, ERR_INVALID_ARG);
                 return;
             }
 
             s_mailbox.cfg_manual_steps = manualSteps;
             s_mailbox.cfg_step_interval_us = stepIntervalUs;
+            s_mailbox.cfg_ultrasonic_threshold_cm = thresholdCm;
             s_mailbox.pending_config = true;
             s_last_error = ERR_NONE;
 
-            uint8_t rsp[6];
+            uint8_t rsp[8];
             proto_write_u32_be(&rsp[0], manualSteps);
             proto_write_u16_be(&rsp[4], stepIntervalUs);
+            proto_write_u16_be(&rsp[6], thresholdCm);
             s_tx_len = empaquetarTrama(RSP_CONFIG_ACK, rsp, sizeof(rsp), (uint8_t*)s_tx_buf);
             break;
         }
@@ -268,6 +274,7 @@ void i2c_loop(void) {
         snap.unjam_steps = s_mailbox.unjam_steps;
         snap.cfg_manual_steps = s_mailbox.cfg_manual_steps;
         snap.cfg_step_interval_us = s_mailbox.cfg_step_interval_us;
+        snap.cfg_ultrasonic_threshold_cm = s_mailbox.cfg_ultrasonic_threshold_cm;
 
         s_mailbox.pending_stop = false;
         s_mailbox.pending_config = false;
@@ -280,6 +287,7 @@ void i2c_loop(void) {
             s_manual_steps = snap.cfg_manual_steps;
         }
         stepper_set_speed_us(snap.cfg_step_interval_us);
+        ultrasonic_sensor_set_threshold_cm(snap.cfg_ultrasonic_threshold_cm);
     }
 
     if (snap.pending_stop) {

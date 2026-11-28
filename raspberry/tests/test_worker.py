@@ -1,4 +1,4 @@
-"""Tests for FeederWorkerThread: IR async capture/cooldown/pruning, schedules, interval, manual button, sync."""
+"""Tests for FeederWorkerThread: ultrasonic async capture/cooldown/pruning, schedules, interval, manual button, sync."""
 
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -74,10 +74,14 @@ class TestFeederWorker(unittest.TestCase):
         self._tmpdir.cleanup()
 
     def test_arduino_config_sync_on_startup_and_reconnect(self) -> None:
-        db.update_settings(self.db_path, {"steps_per_portion": 6144, "step_interval_us": 1800})
+        db.update_settings(
+            self.db_path,
+            {"steps_per_portion": 6144, "step_interval_us": 1800, "ultrasonic_threshold_cm": 35},
+        )
         self.worker.run_once()
         self.assertEqual(self.transport.manual_steps, 6144)
         self.assertEqual(self.transport.step_interval_us, 1800)
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, 35)
         connected, st = self.worker.get_last_arduino_status()
         self.assertTrue(connected)
         self.assertIsNotNone(st)
@@ -89,22 +93,24 @@ class TestFeederWorker(unittest.TestCase):
         self.assertFalse(connected)
         self.assertGreaterEqual(self.worker.get_status()["errors"], 1)
 
-        # Reconnect: worker must re-push settings via CMD_SET_CONFIG
+        # Reconnect: worker must re-push all 3 settings via CMD_SET_CONFIG
         self.transport.manual_steps = 4096
         self.transport.step_interval_us = 2000
+        self.transport.ultrasonic_threshold_cm = 20
         self.transport.fail_next = False
         self.worker.run_once()
         connected, _ = self.worker.get_last_arduino_status()
         self.assertTrue(connected)
         self.assertEqual(self.transport.manual_steps, 6144)
         self.assertEqual(self.transport.step_interval_us, 1800)
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, 35)
 
-    def test_ir_detection_async_capture_cooldown_and_pruning(self) -> None:
+    def test_ultrasonic_detection_async_capture_cooldown_and_pruning(self) -> None:
         db.update_settings(
             self.db_path,
-            {"capture_mode": "photo", "ir_cooldown_s": 30, "max_media_files": 10},
+            {"capture_mode": "photo", "ultrasonic_cooldown_s": 30, "max_media_files": 10},
         )
-        # Seed 10 existing files on disk + DB so the next IR capture triggers pruning
+        # Seed 10 existing files on disk + DB so the next ultrasonic capture triggers pruning
         oldest_name = None
         for i in range(10):
             res = self.camera.capture_photo(trigger="manual")
@@ -119,19 +125,19 @@ class TestFeederWorker(unittest.TestCase):
             if i == 0:
                 oldest_name = res.filename
 
-        # First IR detection triggers async capture and prunes oldest
-        self.client.simulate_ir_detection()
+        # First ultrasonic detection triggers async capture and prunes oldest
+        self.client.simulate_ultrasonic_detection(distance_cm=15)
         self.worker.run_once()
         self.worker.wait_pending_captures(timeout=5.0)
         self.assertEqual(db.count_media_captures(self.db_path), 10)
         self.assertFalse((self.media_dir / oldest_name).exists())
         newest = db.list_media_captures(self.db_path, limit=1)[0]
-        self.assertEqual(newest["trigger"], "ir")
+        self.assertEqual(newest["trigger"], "ultrasonic")
         self.assertEqual(newest["media_type"], "photo")
 
-        # Second IR within 30s cooldown must NOT trigger a capture
+        # Second ultrasonic detection within 30s cooldown must NOT trigger a capture
         self.clock.advance(15.0)
-        self.client.simulate_ir_detection()
+        self.client.simulate_ultrasonic_detection(distance_cm=12)
         self.worker.run_once()
         self.worker.wait_pending_captures(timeout=5.0)
         self.assertEqual(db.list_media_captures(self.db_path, limit=1)[0]["filename"], newest["filename"])
@@ -139,11 +145,11 @@ class TestFeederWorker(unittest.TestCase):
         # After cooldown expires, switch to video mode and trigger again
         db.update_settings(self.db_path, {"capture_mode": "video", "video_duration_s": 4})
         self.clock.advance(20.0)
-        self.client.simulate_ir_detection()
+        self.client.simulate_ultrasonic_detection(distance_cm=10)
         self.worker.run_once()
         self.worker.wait_pending_captures(timeout=5.0)
         latest = db.list_media_captures(self.db_path, limit=1)[0]
-        self.assertEqual(latest["trigger"], "ir")
+        self.assertEqual(latest["trigger"], "ultrasonic")
         self.assertEqual(latest["media_type"], "video")
         self.assertEqual(latest["duration_s"], 4.0)
         self.assertEqual(db.count_media_captures(self.db_path), 10)

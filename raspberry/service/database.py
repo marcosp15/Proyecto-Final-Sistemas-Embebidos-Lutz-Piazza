@@ -50,7 +50,8 @@ DEFAULT_SETTINGS: Dict[str, Any] = {
     "step_interval_us": 1000,
     "capture_mode": "photo",
     "video_duration_s": 5,
-    "ir_cooldown_s": 30,
+    "ultrasonic_cooldown_s": 30,
+    "ultrasonic_threshold_cm": 20,
     "max_media_files": 100,
     "schedule_mode": "schedules",
     "interval_enabled": False,
@@ -63,7 +64,8 @@ _INT_SETTING_BOUNDS: Dict[str, Tuple[int, int]] = {
     "steps_per_portion": (256, 40960),
     "step_interval_us": (1000, 10000),
     "video_duration_s": (2, 15),
-    "ir_cooldown_s": (5, 600),
+    "ultrasonic_cooldown_s": (5, 600),
+    "ultrasonic_threshold_cm": (5, 200),
     "max_media_files": (10, 500),
     "interval_minutes": (1, 1440),
     "interval_portions": (1, 10),
@@ -73,7 +75,7 @@ VALID_CAPTURE_MODES = frozenset({"photo", "video"})
 VALID_SCHEDULE_MODES = frozenset({"schedules", "interval", "manual"})
 VALID_DISPENSE_SOURCES = frozenset({"schedule", "interval", "manual_web", "manual_button", "unjam"})
 VALID_DISPENSE_STATUSES = frozenset({"ok", "busy", "error"})
-VALID_MEDIA_TRIGGERS = frozenset({"ir", "manual"})
+VALID_MEDIA_TRIGGERS = frozenset({"ultrasonic", "manual"})
 VALID_MEDIA_TYPES = frozenset({"photo", "video"})
 
 _TIME_HHMM_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -211,6 +213,32 @@ def init_db(db_path: str) -> None:
                 conn.execute(
                     "INSERT INTO settings (key, value) VALUES ('schedule_mode', 'interval');"
                 )
+        # Migración legacy: ir_cooldown_s -> ultrasonic_cooldown_s y trigger 'ir' -> 'ultrasonic'
+        old_ir_row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'ir_cooldown_s';"
+        ).fetchone()
+        if old_ir_row is not None:
+            has_ultra = conn.execute(
+                "SELECT 1 FROM settings WHERE key = 'ultrasonic_cooldown_s';"
+            ).fetchone()
+            if has_ultra is None:
+                try:
+                    migrated_cd = _validate_and_serialize_setting(
+                        "ultrasonic_cooldown_s", old_ir_row["value"]
+                    )
+                except ValueError:
+                    lo, hi = _INT_SETTING_BOUNDS["ultrasonic_cooldown_s"]
+                    try:
+                        clamped = max(lo, min(hi, int(old_ir_row["value"])))
+                    except (TypeError, ValueError):
+                        clamped = DEFAULT_SETTINGS["ultrasonic_cooldown_s"]
+                    migrated_cd = str(clamped)
+                conn.execute(
+                    "INSERT INTO settings (key, value) VALUES ('ultrasonic_cooldown_s', ?);",
+                    (migrated_cd,),
+                )
+            conn.execute("DELETE FROM settings WHERE key = 'ir_cooldown_s';")
+        conn.execute("UPDATE media_captures SET trigger = 'ultrasonic' WHERE trigger = 'ir';")
         conn.executemany(
             "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?);",
             [(k, _validate_and_serialize_setting(k, v)) for k, v in DEFAULT_SETTINGS.items()],

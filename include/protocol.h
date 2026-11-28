@@ -27,8 +27,8 @@ const uint8_t RSP_ERROR        = 0xFE;
 
 // Bitmask status_flags (byte 0 de RSP_STATUS)
 const uint8_t STATUS_MOTOR_BUSY              = 0x01;
-const uint8_t STATUS_IR_LATCHED              = 0x02;
-const uint8_t STATUS_IR_LIVE                 = 0x04;
+const uint8_t STATUS_ULTRASONIC_LATCHED      = 0x02;
+const uint8_t STATUS_ULTRASONIC_LIVE         = 0x04;
 const uint8_t STATUS_MANUAL_DISPENSE_LATCHED = 0x08;
 
 // Codigos de error (RSP_ERROR)
@@ -39,14 +39,18 @@ const uint8_t ERR_UNKNOWN_CMD   = 0x03;
 const uint8_t ERR_INVALID_FRAME = 0x04;
 
 // Limites de parametros (Contrato 2)
-const int32_t  DISPENSE_MAX_ABS_STEPS  = 204800L;
-const uint16_t UNJAM_DEFAULT_STEPS     = 512U;
-const uint16_t UNJAM_MIN_STEPS         = 64U;
-const uint16_t UNJAM_MAX_STEPS         = 4096U;
-const uint32_t CONFIG_MIN_MANUAL_STEPS = 256UL;
-const uint32_t CONFIG_MAX_MANUAL_STEPS = 40960UL;
-const uint16_t CONFIG_MIN_STEP_US      = 1000U;
-const uint16_t CONFIG_MAX_STEP_US      = 10000U;
+const int32_t  DISPENSE_MAX_ABS_STEPS      = 204800L;
+const uint16_t UNJAM_DEFAULT_STEPS         = 512U;
+const uint16_t UNJAM_MIN_STEPS             = 64U;
+const uint16_t UNJAM_MAX_STEPS             = 4096U;
+const uint32_t CONFIG_MIN_MANUAL_STEPS     = 256UL;
+const uint32_t CONFIG_MAX_MANUAL_STEPS     = 40960UL;
+const uint16_t CONFIG_MIN_STEP_US          = 1000U;
+const uint16_t CONFIG_MAX_STEP_US          = 10000U;
+const uint16_t ULTRASONIC_NO_ECHO_CM       = 0xFFFFU;
+const uint16_t CONFIG_DEFAULT_THRESHOLD_CM = 20U;
+const uint16_t CONFIG_MIN_THRESHOLD_CM     = 5U;
+const uint16_t CONFIG_MAX_THRESHOLD_CM     = 200U;
 
 // Trama [LEN][TYPE][PAYLOAD]: LEN = 2 + payloadLen => max 14 bytes <= 32 B (buffer Wire.h)
 const uint8_t PROTOCOL_MAX_PAYLOAD = 12;

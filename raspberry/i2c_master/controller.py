@@ -14,6 +14,7 @@ from .protocol import (
     DEFAULT_I2C_BUS,
     DEFAULT_RX_LEN,
     DEFAULT_SLAVE_ADDR,
+    DEFAULT_ULTRASONIC_THRESHOLD_CM,
     DEFAULT_UNJAM_STEPS,
     ERR_BUSY,
     ERR_INVALID_ARG,
@@ -21,9 +22,11 @@ from .protocol import (
     MAX_ABS_STEPS,
     MAX_MANUAL_STEPS,
     MAX_STEP_INTERVAL_US,
+    MAX_ULTRASONIC_THRESHOLD_CM,
     MAX_UNJAM_STEPS,
     MIN_MANUAL_STEPS,
     MIN_STEP_INTERVAL_US,
+    MIN_ULTRASONIC_THRESHOLD_CM,
     MIN_UNJAM_STEPS,
     RSP_CONFIG_ACK,
     RSP_DISPENSE_ACK,
@@ -147,7 +150,7 @@ class FeederMaster:
         return pkt.payload[0]
 
     def get_status(self, consume_latch: bool = True) -> StatusData:
-        """Consulta estado del motor, sensor IR, botón manual y último error."""
+        """Consulta estado del motor, sensor ultrasónico, botón manual y último error."""
         req_flag = STATUS_REQ_CONSUME_LATCH if consume_latch else STATUS_REQ_READ_ONLY
         pkt = self._send_command(CMD_GET_STATUS, bytes((req_flag,)), RSP_STATUS)
         try:
@@ -198,8 +201,13 @@ class FeederMaster:
             raise FeederI2CError(f"RSP_UNJAM_ACK inválido: longitud {len(pkt.payload)}")
         return unpack_u16(pkt.payload, 0)
 
-    def set_config(self, manual_steps: int, step_interval_us: int) -> Tuple[int, int]:
-        """Actualiza manual_steps y step_interval_us en Arduino y retorna los valores aplicados."""
+    def set_config(
+        self,
+        manual_steps: int,
+        step_interval_us: int,
+        ultrasonic_threshold_cm: int = DEFAULT_ULTRASONIC_THRESHOLD_CM,
+    ) -> Tuple[int, int, int]:
+        """Actualiza manual_steps, step_interval_us y ultrasonic_threshold_cm en Arduino."""
         if (
             isinstance(manual_steps, bool)
             or not isinstance(manual_steps, int)
@@ -214,18 +222,37 @@ class FeederMaster:
             raise ValueError(
                 f"step_interval_us debe estar entre {MIN_STEP_INTERVAL_US} y {MAX_STEP_INTERVAL_US}"
             )
+        if (
+            isinstance(ultrasonic_threshold_cm, bool)
+            or not isinstance(ultrasonic_threshold_cm, int)
+            or not (
+                MIN_ULTRASONIC_THRESHOLD_CM <= ultrasonic_threshold_cm <= MAX_ULTRASONIC_THRESHOLD_CM
+            )
+        ):
+            raise ValueError(
+                f"ultrasonic_threshold_cm debe estar entre {MIN_ULTRASONIC_THRESHOLD_CM} y {MAX_ULTRASONIC_THRESHOLD_CM}"
+            )
 
-        payload = pack_u32(manual_steps) + pack_u16(step_interval_us)
+        payload = (
+            pack_u32(manual_steps) + pack_u16(step_interval_us) + pack_u16(ultrasonic_threshold_cm)
+        )
         pkt = self._send_command(CMD_SET_CONFIG, payload, RSP_CONFIG_ACK)
-        if len(pkt.payload) != 6:
+        if len(pkt.payload) != 8:
             raise FeederI2CError(f"RSP_CONFIG_ACK inválido: longitud {len(pkt.payload)}")
-        return unpack_u32(pkt.payload, 0), unpack_u16(pkt.payload, 4)
+        return unpack_u32(pkt.payload, 0), unpack_u16(pkt.payload, 4), unpack_u16(pkt.payload, 6)
 
-    def simulate_ir_detection(self, live_duration_s: float = 1.0) -> bool:
-        """Inyecta una detección IR cuando el transporte activo es MockArduinoTransport."""
+    def simulate_ultrasonic_detection(
+        self,
+        distance_cm: int = 12,
+        live_duration_s: float = 1.0,
+    ) -> bool:
+        """Inyecta una detección ultrasónica cuando el transporte activo es MockArduinoTransport."""
         if not isinstance(self.transport, MockArduinoTransport):
-            raise RuntimeError("simulate_ir_detection solo está disponible en modo mock.")
-        self.transport.simulate_ir_detection(live_duration_s=live_duration_s)
+            raise RuntimeError("simulate_ultrasonic_detection solo está disponible en modo mock.")
+        self.transport.simulate_ultrasonic_detection(
+            distance_cm=distance_cm,
+            live_duration_s=live_duration_s,
+        )
         return True
 
     def simulate_manual_button(self) -> bool:

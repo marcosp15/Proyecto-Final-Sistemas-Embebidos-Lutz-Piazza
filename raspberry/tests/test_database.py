@@ -46,6 +46,8 @@ class TestDatabase(unittest.TestCase):
         cfg = db.get_settings(self.db_path)
         self.assertEqual(cfg, db.DEFAULT_SETTINGS)
         self.assertEqual(cfg["step_interval_us"], 1000)
+        self.assertEqual(cfg["ultrasonic_cooldown_s"], 30)
+        self.assertEqual(cfg["ultrasonic_threshold_cm"], 20)
         self.assertEqual(cfg["schedule_mode"], "schedules")
         self.assertIs(cfg["interval_enabled"], False)
 
@@ -56,7 +58,8 @@ class TestDatabase(unittest.TestCase):
                 "step_interval_us": 1500,
                 "capture_mode": "video",
                 "video_duration_s": 10,
-                "ir_cooldown_s": 45,
+                "ultrasonic_cooldown_s": 45,
+                "ultrasonic_threshold_cm": 35,
                 "max_media_files": 50,
                 "interval_enabled": True,
                 "interval_minutes": 120,
@@ -66,6 +69,8 @@ class TestDatabase(unittest.TestCase):
         )
         self.assertEqual(updated["steps_per_portion"], 8192)
         self.assertEqual(updated["capture_mode"], "video")
+        self.assertEqual(updated["ultrasonic_cooldown_s"], 45)
+        self.assertEqual(updated["ultrasonic_threshold_cm"], 35)
         self.assertIs(updated["interval_enabled"], True)
         self.assertEqual(updated["schedule_mode"], "interval")
         self.assertEqual(updated["last_interval_run_at"], "2026-11-25T10:00:00-03:00")
@@ -73,6 +78,7 @@ class TestDatabase(unittest.TestCase):
         # Out-of-range and invalid types rejected atomically (no partial writes)
         invalid_cases = [
             {"unknown_key": 1},
+            {"ir_cooldown_s": 30},
             {"steps_per_portion": 100},
             {"steps_per_portion": 50000},
             {"steps_per_portion": True},
@@ -82,8 +88,12 @@ class TestDatabase(unittest.TestCase):
             {"schedule_mode": "always"},
             {"video_duration_s": 1},
             {"video_duration_s": 16},
-            {"ir_cooldown_s": 4},
-            {"ir_cooldown_s": 601},
+            {"ultrasonic_cooldown_s": 4},
+            {"ultrasonic_cooldown_s": 601},
+            {"ultrasonic_cooldown_s": True},
+            {"ultrasonic_threshold_cm": 4},
+            {"ultrasonic_threshold_cm": 201},
+            {"ultrasonic_threshold_cm": True},
             {"max_media_files": 9},
             {"max_media_files": 501},
             {"interval_enabled": "maybe"},
@@ -213,7 +223,7 @@ class TestDatabase(unittest.TestCase):
             ext = "mp4" if media_type == "video" else "jpg"
             item = db.add_media_capture(
                 self.db_path,
-                trigger="ir" if idx < 3 else "manual",
+                trigger="ultrasonic" if idx < 3 else "manual",
                 media_type=media_type,
                 filename=f"20261125_10000{idx}_cap.{ext}",
                 size_bytes=100 + idx,
@@ -241,14 +251,90 @@ class TestDatabase(unittest.TestCase):
         self.assertIsNone(db.get_media_capture(self.db_path, items[4]["id"]))
         self.assertIsNone(db.delete_media_capture(self.db_path, items[4]["id"]))
 
-        # Validation failures (path traversal, invalid trigger/type)
+        # Validation failures (path traversal, invalid/legacy trigger, invalid type)
         for bad_name in ("../evil.jpg", "sub/a.jpg", "a\\b.jpg", "..", ""):
             with self.assertRaises(ValueError):
                 db.add_media_capture(self.db_path, "manual", "photo", bad_name)
-        with self.assertRaises(ValueError):
-            db.add_media_capture(self.db_path, "bad_trigger", "photo", "ok.jpg")
+        for bad_trigger in ("bad_trigger", "ir"):
+            with self.assertRaises(ValueError):
+                db.add_media_capture(self.db_path, bad_trigger, "photo", "ok.jpg")
         with self.assertRaises(ValueError):
             db.add_media_capture(self.db_path, "manual", "audio", "ok.mp3")
+
+    def test_legacy_ir_db_migration_is_idempotent(self) -> None:
+        legacy_db = str(Path(self._tmpdir.name) / "legacy_ir.db")
+        conn = sqlite3.connect(legacy_db)
+        try:
+            conn.executescript(db.SCHEMA_SQL)
+            conn.execute("INSERT INTO settings (key, value) VALUES ('ir_cooldown_s', '45');")
+            conn.execute(
+                "INSERT INTO media_captures (timestamp, trigger, media_type, filename, size_bytes, duration_s) "
+                "VALUES ('2026-11-25T09:00:00-03:00', 'ir', 'photo', '20261125_090000_ir.jpg', 1234, 0.0);"
+            )
+            conn.execute(
+                "INSERT INTO media_captures (timestamp, trigger, media_type, filename, size_bytes, duration_s) "
+                "VALUES ('2026-11-25T09:05:00-03:00', 'manual', 'photo', '20261125_090500_manual.jpg', 567, 0.0);"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        # First init_db migrates ir_cooldown_s -> ultrasonic_cooldown_s & trigger 'ir' -> 'ultrasonic'
+        db.init_db(legacy_db)
+        cfg = db.get_settings(legacy_db)
+        self.assertEqual(cfg["ultrasonic_cooldown_s"], 45)
+        self.assertEqual(cfg["ultrasonic_threshold_cm"], 20)
+
+        conn = sqlite3.connect(legacy_db)
+        try:
+            old_row = conn.execute("SELECT value FROM settings WHERE key = 'ir_cooldown_s';").fetchone()
+            self.assertIsNone(old_row)
+            triggers = {
+                row[0]: row[1]
+                for row in conn.execute("SELECT filename, trigger FROM media_captures;").fetchall()
+            }
+            self.assertEqual(triggers["20261125_090000_ir.jpg"], "ultrasonic")
+            self.assertEqual(triggers["20261125_090500_manual.jpg"], "manual")
+        finally:
+            conn.close()
+
+        # Second init_db must be completely idempotent
+        db.init_db(legacy_db)
+        self.assertEqual(db.get_setting(legacy_db, "ultrasonic_cooldown_s"), 45)
+        self.assertEqual(db.get_setting(legacy_db, "ultrasonic_threshold_cm"), 20)
+        media = db.list_media_captures(legacy_db)
+        self.assertEqual([m["trigger"] for m in media], ["manual", "ultrasonic"])
+
+        # Edge case: out-of-range legacy ir_cooldown_s is clamped and existing ultrasonic_cooldown_s wins
+        clamp_db = str(Path(self._tmpdir.name) / "legacy_clamp.db")
+        conn = sqlite3.connect(clamp_db)
+        try:
+            conn.executescript(db.SCHEMA_SQL)
+            conn.execute("INSERT INTO settings (key, value) VALUES ('ir_cooldown_s', '999');")
+            conn.commit()
+        finally:
+            conn.close()
+        db.init_db(clamp_db)
+        self.assertEqual(db.get_setting(clamp_db, "ultrasonic_cooldown_s"), 600)
+
+        coexist_db = str(Path(self._tmpdir.name) / "legacy_coexist.db")
+        conn = sqlite3.connect(coexist_db)
+        try:
+            conn.executescript(db.SCHEMA_SQL)
+            conn.execute("INSERT INTO settings (key, value) VALUES ('ir_cooldown_s', '15');")
+            conn.execute("INSERT INTO settings (key, value) VALUES ('ultrasonic_cooldown_s', '90');")
+            conn.commit()
+        finally:
+            conn.close()
+        db.init_db(coexist_db)
+        self.assertEqual(db.get_setting(coexist_db, "ultrasonic_cooldown_s"), 90)
+        conn = sqlite3.connect(coexist_db)
+        try:
+            self.assertIsNone(
+                conn.execute("SELECT value FROM settings WHERE key = 'ir_cooldown_s';").fetchone()
+            )
+        finally:
+            conn.close()
 
 
 if __name__ == "__main__":

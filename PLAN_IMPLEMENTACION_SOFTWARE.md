@@ -10,7 +10,7 @@ Sistema embebido distribuido en dos nodos:
 
 1. **Nodo Esclavo — Arduino UNO (`ATmega328P-PU`, PlatformIO):**
    - Controla el motor paso a paso `28BYJ-48` + driver `ULN2003` mediante manipulación directa de registros AVR (`DDRB`/`PORTB`), sin bloqueos.
-   - Detecta a la mascota mediante sensor IR digital (`FC-51` / `HW-201`) por interrupción externa `INT1` (`PD3`) con antirrebote y *flag latched* para no perder eventos entre consultas del maestro.
+   - Detecta a la mascota mediante sensor ultrasónico **`HC-SR04`** (`PD4` `TRIG` + `PD3`/`INT1` `ECHO`) con medición 100% no bloqueante por registros AVR (`Timer1` a `0,5 µs/tick` + `INT1` en ambos flancos, pulso `TRIG` de `10 µs` por `TCNT1`, disparo cada `100 ms`), filtro de 3 lecturas consecutivas + histéresis de `3 cm`, umbral configurable (`ultrasonic_threshold_cm`), telemetría de distancia en vivo (`distance_cm`) y *flag latched* para no perder eventos entre consultas del maestro.
    - Botón físico opcional de dispensado manual en `INT0` (`PD2`) con antirrebote.
    - LED testigo de estado en `PB5` (`D13`) gobernado por `Timer2` (base de tiempo 1 ms).
    - Esclavo I2C en dirección `0x08` con *pull-ups* internas de 5 V desactivadas por registro (`DDRC`/`PORTC`) para compatibilidad eléctrica con la Raspberry Pi (3.3 V).
@@ -20,7 +20,7 @@ Sistema embebido distribuido en dos nodos:
    - Mantiene hora sincronizada por internet (NTP del SO).
    - Servicio único (`run_service.py` + unidad `systemd`) compuesto por:
      - Capa I2C thread-safe (`i2c_master/` + `client_sync.py`) con modo `--mock` para desarrollo y CI sin hardware.
-     - Hilo de fondo (`worker.py`): consulta estado/IR al Arduino, dispara captura asíncrona de cámara con *cooldown* configurable, y ejecuta el planificador de comidas (horarios fijos `HH:MM` y/o modo intervalo cada `N` minutos).
+     - Hilo de fondo (`worker.py`): consulta estado y detección ultrasónica al Arduino, sincroniza configuración (`steps_per_portion`, `step_interval_us`, `ultrasonic_threshold_cm`), dispara captura asíncrona de cámara con *cooldown* configurable (`ultrasonic_cooldown_s`), y ejecuta el planificador de comidas (horarios fijos `HH:MM` y/o modo intervalo cada `N` minutos).
      - Gestor de cámara (`camera.py`): autodetecta CLI disponible (`rpicam-*` → `libcamera-*` → `raspistill`/`raspivid` + `ffmpeg` para MP4), soporta foto JPEG (default) y video corto MP4 configurable, con rotación automática (máximo de archivos) y backend *mock*.
      - API REST Flask + interfaz web funcional mínima (`service/web/index.html`) para red local (LAN, sin autenticación).
 
@@ -36,7 +36,7 @@ Los *workers* deben reutilizar y adaptar estos archivos ya probados en la materi
 | `/home/marocos/Documents/PlatformIO/Projects/pruebas proyecto final embebidos` | `include/timer.h`, `src/timer.cpp`, `include/boton.h`, `src/boton.cpp` | Base de tiempo `TIMER2_COMPA_vect` (1 ms, hasta 16 timers virtuales) y patrón `INT0` con debounce en `PD2`. | En `timer.cpp`, proteger `counter_ms`/`is_running` con `ATOMIC_BLOCK` si se reinicia desde fuera de ISR. En `boton.cpp`, asegurar lectura/configuración 100% por registros (`DDRD`/`PORTD`/`EICRA`/`EIMSK`). |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `include/protocol.h`, `src/protocol.cpp`, `src/i2c_handlers.cpp` | Estructura modular del protocolo I2C e `initI2C()` con desactivación de pull-ups en `PC4`/`PC5`. | Reemplazar opcodes de Lab 4 y simplificar el framing a `[LEN][TYPE][PAYLOAD]` (`LEN = 2 + payloadLen`, sin delimitadores ni escapes; I2C ya delimita transacciones por hardware). Validar `inBuf[0] == len` en `decodificarTrama()` y desacoplar ejecución de comandos fuera de la ISR `onReceive`. |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `raspberry/i2c_master/{protocol,transport,controller}.py` | Clases `SMBus2Transport`, `LinuxI2CDevTransport`, `MockArduinoTransport`, `empaquetar_trama`, `decodificar_trama`. | Actualizar opcodes/mock al protocolo del dispenser. Eliminar `sensor.py` (LM35) y lógica de brillo/ADC. |
-| `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `raspberry/service/{config,database,client_sync,collector,api}.py`, `raspberry/run_service.py`, `raspberry/monitoreo-i2c.service` | Estructura Flask + SQLite + `threading.Lock` + hilo daemon + manejo de `SIGINT`/`SIGTERM` + plantilla `systemd`. | Adaptar esquema SQLite, endpoints, `worker.py` (scheduler + polling IR), sumar `camera.py` y `web/index.html`. |
+| `/home/marocos/Documents/PlatformIO/Projects/laboratorio4-lutz-piazza` | `raspberry/service/{config,database,client_sync,collector,api}.py`, `raspberry/run_service.py`, `raspberry/monitoreo-i2c.service` | Estructura Flask + SQLite + `threading.Lock` + hilo daemon + manejo de `SIGINT`/`SIGTERM` + plantilla `systemd`. | Adaptar esquema SQLite, endpoints, `worker.py` (scheduler + polling ultrasónico), sumar `camera.py` y `web/index.html`. |
 | `/home/marocos/Documents/PlatformIO/Projects/laboratorio5-lutz-piazza` | *(Ignorar)* | Nada. | **PROHIBIDO usar FreeRTOS.** |
 
 ---
@@ -45,12 +45,13 @@ Los *workers* deben reutilizar y adaptar estos archivos ya probados en la materi
 
 El Coordinador del swarm debe rechazar cualquier PR/commit de un worker que viole estas reglas:
 
-1. **Cero funciones Arduino de GPIO:** Prohibido usar `pinMode()`, `digitalWrite()`, `digitalRead()`, `analogRead()`, `attachInterrupt()` en `include/` y `src/`. Toda configuración y operación de pines, interrupciones externas y Timer2 debe hacerse con operaciones binarias sobre registros AVR (`DDRx`, `PORTx`, `PINx`, `EICRA`, `EIMSK`, `TCCR2A/B`, `OCR2A`, `TIMSK2`) y secciones críticas con `<util/atomic.h>`.
-   - *Excepciones permitidas (igual que Lab 4 y driver probado):* `<Wire.h>` para el periférico TWI esclavo, y `millis()`/`micros()` (Timer0 del core AVR) usados por `stepper_motor.cpp` y debounce.
+1. **Cero funciones Arduino de GPIO o bloqueantes:** Prohibido usar `pinMode()`, `digitalWrite()`, `digitalRead()`, `analogRead()`, `attachInterrupt()`, `pulseIn()`, `delay()`, `delayMicroseconds()` en `include/` y `src/`. Toda configuración y operación de pines, interrupciones externas, `Timer1` y `Timer2` debe hacerse con operaciones binarias sobre registros AVR (`DDRx`, `PORTx`, `PINx`, `EICRA`, `EIFR`, `EIMSK`, `TCCR1A/B`, `TCNT1`, `TCCR2A/B`, `OCR2A`, `TIMSK2`) y secciones críticas con `<util/atomic.h>`.
+   - El pulso `TRIG` de `10 µs` del `HC-SR04` se temporiza leyendo `TCNT1` (20 ticks a `0,5 µs/tick`) sin `delayMicroseconds()` ni `<util/delay.h>`, y el eco `ECHO` se mide exclusivamente mediante `INT1` (ambos flancos) + `Timer1`.
+   - *Excepciones permitidas (igual que Lab 4 y driver probado):* `<Wire.h>` para el periférico TWI esclavo, y `millis()`/`micros()` (Timer0 del core AVR) usados por `stepper_motor.cpp`, debounce y timeout de eco.
 2. **Seguridad eléctrica I2C 3.3 V:** `initI2C()` DEBE ejecutar `DDRC &= ~((1 << PC4) | (1 << PC5)); PORTC &= ~((1 << PC4) | (1 << PC5));` inmediatamente después de `Wire.begin(SLAVE_ADDR)`.
 3. **No bloquear el superloop ni hacer trabajo pesado en ISR:**
-   - Prohibido usar `delay()` o bucles bloqueantes en `src/`.
-   - `Wire.onReceive` solo decodifica la trama, actualiza un buzón `volatile` (o responde `RSP_STATUS`/`RSP_PONG`/`RSP_ERROR`) y llena `txBuffer`. Las transiciones de motor se ejecutan de forma segura desde `loop()`.
+   - Prohibido usar `pulseIn()`, `delay()`, `delayMicroseconds()` o bucles bloqueantes largos en `src/` (para no introducir jitter en los pasos de `1000 µs` del stepper `28BYJ-48`).
+   - `Wire.onReceive` solo decodifica la trama, actualiza un buzón `volatile` (o responde `RSP_STATUS`/`RSP_PONG`/`RSP_ERROR`) y llena `txBuffer`. Las transiciones de motor y cambios de configuración se ejecutan de forma segura desde `loop()`.
 4. **Límite de buffer I2C (`Wire.h`):** Toda trama empaquetada `[LEN][TYPE][PAYLOAD]` debe medir `<= 32` bytes (máximo 14 bytes con `PROTOCOL_MAX_PAYLOAD = 12`).
 5. **Protección térmica del ULN2003:** Las 4 bobinas (`PB0..PB3`) DEBEN quedar en `0` cada vez que `s_steps_remaining == 0` o ante `CMD_STOP_MOTOR`.
 6. **Cámara asíncrona y serializada en RPi:** Una captura de video de 5 s NO puede bloquear el hilo de polling I2C ni el servidor HTTP Flask. Debe ejecutarse en un `ThreadPoolExecutor(max_workers=1)` (o cola dedicada) con protección contra capturas simultáneas.
@@ -64,10 +65,12 @@ El Coordinador del swarm debe rechazar cualquier PR/commit de un worker que viol
 | :--- | :--- | :--- | :--- | :--- |
 | **ULN2003 IN1..IN4** | `D8, D9, D10, D11` | `PB0..PB3` | `DDRB`, `PORTB` | Salidas (`DDRB |= 0x0F`), `PORTB &= ~0x0F` en reposo. |
 | **Botón dispensado manual** | `D2` | `PD2` (`INT0`) | `DDRD`, `PORTD`, `PIND`, `EICRA`, `EIMSK` | Entrada con pull-up interno (`PORTD |= (1<<PD2)`), flanco de bajada (`ISC01=1, ISC00=0`), debounce 200 ms. |
-| **Sensor IR (`FC-51` / `HW-201`)** | `D3` | `PD3` (`INT1`) | `DDRD`, `PORTD`, `PIND`, `EICRA`, `EIMSK` | Entrada con pull-up interno (`PORTD |= (1<<PD3)`), activo en `LOW`, flanco de bajada (`ISC11=1, ISC10=0`), debounce 150 ms + lectura en vivo `!(PIND & (1<<PD3))`. |
-| **LED de Estado** | `D13` | `PB5` | `DDRB`, `PORTB` | Salida (`DDRB |= (1<<PB5)`). Parpadeo lento (1000 ms) = idle; rápido (150 ms) = girando; doble pulso = IR activo. |
+| **Sensor `HC-SR04` (`TRIG`)** | `D4` | `PD4` | `DDRD`, `PORTD` | Salida (`DDRD |= (1<<DDD4)`), reposo `LOW` (`PORTD &= ~(1<<PORTD4)`). Pulso `HIGH` de `10 µs` cada `100 ms` temporizado con `TCNT1` (20 ticks). |
+| **Sensor `HC-SR04` (`ECHO`)** | `D3` | `PD3` (`INT1`) | `DDRD`, `PORTD`, `PIND`, `EICRA`, `EIFR`, `EIMSK` | Entrada **sin pull-up interno** (`DDRD &= ~(1<<DDD3); PORTD &= ~(1<<PORTD3)`), salida push-pull 0–5 V del `HC-SR04`. `INT1` en **cualquier flanco** (`ISC11=0, ISC10=1`); timeout `30 ms`, rango `2..400 cm` (`1 cm = 116 ticks`), filtro de 3 lecturas consecutivas + histéresis `+3 cm`. |
+| **Contador de pulso `HC-SR04`** | *(Interno)* | `Timer1` (16 bits) | `TCCR1A`, `TCCR1B`, `TCNT1` | Modo normal (`TCCR1A = 0`), prescaler 8 (`TCCR1B = (1<<CS11)`): `16 MHz / 8 = 2 MHz` → **`0,5 µs/tick`**, rango máx. `32,768 ms` (~565 cm). |
+| **LED de Estado** | `D13` | `PB5` | `DDRB`, `PORTB` | Salida (`DDRB |= (1<<PB5)`). Parpadeo lento (1000 ms) = idle; rápido (150 ms) = girando; doble pulso = sensor ultrasónico activo (`STATUS_LED_ULTRASONIC_ACTIVE`). |
 | **I2C Esclavo (`0x08`)** | `A4` (SDA), `A5` (SCL) | `PC4`, `PC5` | `DDRC`, `PORTC` + `Wire` | Pull-ups internas **desactivadas** tras `Wire.begin(0x08)`. |
-| **Base de tiempo 1 ms** | *(Interno)* | `Timer2` | `TCCR2A/B`, `OCR2A`, `TIMSK2` | CTC, prescaler 64, `OCR2A = 249` (`ISR(TIMER2_COMPA_vect)`). |
+| **Base de tiempo 1 ms** | *(Interno)* | `Timer2` | `TCCR2A/B`, `OCR2A`, `TIMSK2` | CTC, prescaler 64, `OCR2A = 249` (`ISR(TIMER2_COMPA_vect)`). También dispara el timer virtual de `100 ms` del `HC-SR04` (> 60 ms mínimo del datasheet). |
 
 ---
 
@@ -84,18 +87,18 @@ Framing compacto sobre transacciones I2C (sin delimitadores ni escapes, ya que e
 
 | Comando (RPi → Arduino) | Código | Payload Request | Respuesta (Arduino → RPi) | Código | Payload Response |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `CMD_GET_STATUS` | `0x10` | 1 byte: `flags` (`0x01` = consumir latches `ir_latched` y `manual_dispense_latched`; `0x00` = solo leer sin limpiar). Si payload vacío, asumir `0x00`. | `RSP_STATUS` | `0x90` | **6 bytes:** `[0]` `status_flags`, `[1..4]` `int32 steps_remaining`, `[5]` `last_error` |
+| `CMD_GET_STATUS` | `0x10` | 1 byte: `flags` (`0x01` = consumir latches `ultrasonic_latched` y `manual_dispense_latched`; `0x00` = solo leer sin limpiar). Si payload vacío, asumir `0x00`. | `RSP_STATUS` | `0x90` | **8 bytes (`LEN = 10`):** `[0]` `status_flags`, `[1..4]` `int32 steps_remaining`, `[5]` `uint8 last_error`, `[6..7]` `uint16 distance_cm` (`0xFFFF` = sin lectura / fuera de rango; struct `>BiBH`) |
 | `CMD_DISPENSE_STEPS` | `0x11` | **4 bytes:** `int32 steps` (con signo; `+` avanza, `-` retrocede). Opcionalmente **6 bytes:** `+ uint16 step_interval_us`. Rango válido: `1 <= |steps| <= 204800` (50 vueltas máx). | `RSP_DISPENSE_ACK` | `0x91` | **4 bytes:** `int32 steps` aceptados |
 | `CMD_STOP_MOTOR` | `0x12` | 0 bytes | `RSP_STOP_ACK` | `0x92` | **4 bytes:** `int32 steps_cancelled` |
 | `CMD_UNJAM` | `0x13` | 0 bytes (default `512` pasos = 1/8 vuelta) o **2 bytes:** `uint16 wiggle_steps` (`64..4096`) | `RSP_UNJAM_ACK` | `0x93` | **2 bytes:** `uint16 wiggle_steps` aceptados |
-| `CMD_SET_CONFIG` | `0x14` | **6 bytes:** `[0..3]` `uint32 manual_steps` (`256..40960`), `[4..5]` `uint16 step_interval_us` (`1000..10000`) | `RSP_CONFIG_ACK` | `0x94` | **6 bytes:** eco de `manual_steps` y `step_interval_us` aplicados |
+| `CMD_SET_CONFIG` | `0x14` | **8 bytes (`LEN = 10`):** `[0..3]` `uint32 manual_steps` (`256..40960`), `[4..5]` `uint16 step_interval_us` (`1000..10000`), `[6..7]` `uint16 ultrasonic_threshold_cm` (`5..200`) | `RSP_CONFIG_ACK` | `0x94` | **8 bytes (`LEN = 10`):** eco de `manual_steps`, `step_interval_us` y `ultrasonic_threshold_cm` aplicados |
 | `CMD_PING` | `0x1F` | 0 bytes | `RSP_PONG` | `0x9F` | **1 byte:** `protocol_version = 0x01` |
 | *(Cualquier error)* | — | — | `RSP_ERROR` | `0xFE` | **2 bytes:** `[0]` `failed_cmd`, `[1]` `error_code` |
 
 ### 5.2 Bitmask `status_flags` (byte 0 de `RSP_STATUS`)
 - `bit 0 (0x01)`: `MOTOR_BUSY` — `1` si el stepper está girando o ejecutando una secuencia `unjam`.
-- `bit 1 (0x02)`: `IR_LATCHED` — `1` si el sensor IR detectó un flanco de bajada desde la última lectura consumida.
-- `bit 2 (0x04)`: `IR_LIVE` — `1` si el sensor IR está detectando presencia en este instante (`!(PIND & (1 << PD3))`).
+- `bit 1 (0x02)`: `STATUS_ULTRASONIC_LATCHED` (`FLAG_ULTRASONIC_LATCHED`) — `1` si el sensor ultrasónico confirmó presencia (3 lecturas consecutivas `<= ultrasonic_threshold_cm`) desde la última lectura consumida.
+- `bit 2 (0x04)`: `STATUS_ULTRASONIC_LIVE` (`FLAG_ULTRASONIC_LIVE`) — `1` mientras el sensor ultrasónico mantiene detección activa (se libera tras 3 lecturas consecutivas sin eco o `> ultrasonic_threshold_cm + 3 cm`).
 - `bit 3 (0x08)`: `MANUAL_DISPENSE_LATCHED` — `1` si el botón físico `D2` disparó un dispensado desde la última lectura consumida.
 
 ### 5.3 Códigos `error_code` (`RSP_ERROR`)
@@ -146,9 +149,9 @@ CREATE TABLE IF NOT EXISTS dispense_events (
 CREATE TABLE IF NOT EXISTS media_captures (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,            -- ISO-8601 con timezone local
-    trigger TEXT NOT NULL,              -- 'ir' | 'manual'
+    trigger TEXT NOT NULL,              -- 'ultrasonic' | 'manual'
     media_type TEXT NOT NULL,           -- 'photo' | 'video'
-    filename TEXT NOT NULL UNIQUE,      -- Nombre plano sin rutas (ej. '20261125_143012_ir.jpg')
+    filename TEXT NOT NULL UNIQUE,      -- Nombre plano sin rutas (ej. '20261125_143012_ultrasonic.jpg')
     size_bytes INTEGER NOT NULL DEFAULT 0,
     duration_s REAL DEFAULT 0
 );
@@ -158,13 +161,16 @@ CREATE INDEX IF NOT EXISTS idx_media_ts ON media_captures(timestamp DESC);
 ```
 
 ### Valores por Defecto en `settings` (seed idempotente en `init_db`)
+`init_db()` ejecuta además una migración automática idempotente para bases `feeder.db` existentes hacia las claves y disparadores del sensor ultrasónico (`ultrasonic_cooldown_s`, `ultrasonic_threshold_cm` y `trigger='ultrasonic'`).
+
 | Clave | Default | Rango válido / Descripción |
 | :--- | :--- | :--- |
 | `steps_per_portion` | `4096` | `256..40960` (calibrable desde web; 4096 = 1 vuelta del 28BYJ-48) |
-| `step_interval_us` | `2000` | `1000..10000` (µs entre medios pasos) |
+| `step_interval_us` | `2000` | `1000..10000` (µs entre medios pasos; oculto en web, ajustable vía `/api/config`) |
 | `capture_mode` | `photo` | `photo` \| `video` |
 | `video_duration_s` | `5` | `2..15` segundos |
-| `ir_cooldown_s` | `30` | `5..600` segundos mínimos entre capturas disparadas por IR |
+| `ultrasonic_cooldown_s` | `30` | `5..600` segundos mínimos entre capturas disparadas por el sensor ultrasónico (oculto en web, ajustable vía `/api/config`) |
+| `ultrasonic_threshold_cm` | `20` | `5..200` cm, umbral de distancia para confirmar presencia (oculto en web, ajustable vía `/api/config` y sincronizado al Arduino por `CMD_SET_CONFIG`) |
 | `max_media_files` | `100` | `10..500` archivos máximos retenidos en disco/BD (borra los más viejos) |
 | `interval_enabled` | `0` | `0` \| `1` (habilita modo intervalo repetitivo) |
 | `interval_minutes` | `240` | `1..1440` (ej. 240 = cada 4 horas; permite 1 min para pruebas en vivo) |
@@ -175,14 +181,14 @@ CREATE INDEX IF NOT EXISTS idx_media_ts ON media_captures(timestamp DESC);
 
 ## 7. Contrato 4 — API REST Flask y Web Funcional (`raspberry/service/api.py`)
 
-El diseño visual no es prioritario: `GET /` sirve un `index.html` limpio y utilitario (HTML + JS `fetch`) que expone controles para probar todos los endpoints y muestra la galería de fotos (`<img>`) y videos (`<video controls>`) con fecha/hora.
+El diseño visual no es prioritario: `GET /` sirve un `index.html` limpio y utilitario (HTML + JS `fetch`) que expone controles para probar los endpoints principales y muestra la galería de fotos (`<img>`) y videos (`<video controls>`) con fecha/hora. Los parámetros técnicos (`step_interval_us`, `ultrasonic_cooldown_s` y `ultrasonic_threshold_cm`) se mantienen ocultos en la interfaz web y se ajustan por `PUT`/`POST /api/config`; la distancia en vivo (`distance_cm`) se visualiza dentro del panel **Debugging** (apagado por defecto).
 
 | Método y Ruta | Request Body / Query | Respuesta JSON (`200`/`201`) | Errores esperados |
 | :--- | :--- | :--- | :--- |
 | `GET /` | — | HTML funcional mínimo (`service/web/index.html`) | — |
-| `GET /api/status` | — | `{status, mode, arduino: {connected, motor_busy, steps_remaining, ir_live, last_error}, worker: {running, polls, errors, last_poll_at, next_schedule}, camera: {backend, capturing}, server_time}` | `500` |
+| `GET /api/status` | — | `{status, mode, arduino: {connected, motor_busy, steps_remaining, ultrasonic_live, distance_cm, last_error}, worker: {running, polls, errors, last_poll_at, next_schedule}, camera: {backend, capturing}, server_time}` (`distance_cm` es `int \| null`) | `500` |
 | `GET /api/config` | — | `{status: "ok", config: {...settings tipados...}}` | `500` |
-| `PUT /api/config` | JSON parcial con cualquier subconjunto de `settings` | `{status: "ok", config: {...}, arduino_synced: bool}`. Si cambia `steps_per_portion` o `step_interval_us`, envía `CMD_SET_CONFIG` al Arduino. | `400` validación fuera de rango |
+| `PUT /api/config` / `POST /api/config` | JSON parcial con cualquier subconjunto de `settings` (incluye `ultrasonic_cooldown_s` y `ultrasonic_threshold_cm`) | `{status: "ok", config: {...}, arduino_synced: bool}`. Si cambia `steps_per_portion`, `turns_per_portion`, `step_interval_us` o `ultrasonic_threshold_cm`, envía `CMD_SET_CONFIG` (8 B) al Arduino. | `400` validación fuera de rango |
 | `GET /api/schedules` | — | `{status: "ok", schedules: [{id, time_hhmm, portions, enabled, last_triggered_date}]}` | `500` |
 | `POST /api/schedules` | `{"time_hhmm": "08:30", "portions": 2, "enabled": true}` | `201` `{status: "ok", schedule: {...}}` | `400` formato `HH:MM` o porciones inválidas |
 | `PUT /api/schedules/<id>` | Campos opcionales `time_hhmm`, `portions`, `enabled` | `200` `{status: "ok", schedule: {...}}` | `400`, `404` |
@@ -195,7 +201,7 @@ El diseño visual no es prioritario: `GET /` sirve un `index.html` limpio y util
 | `POST /api/media/capture` | `{}` o `{"mode": "photo"\|"video", "duration_s": 5}` | `201` `{status: "ok", item: {...}}` | `400`, `409` cámara ocupada, `503` fallo de cámara |
 | `GET /media/<filename>` | — | Archivo JPEG o MP4 servido desde `media_dir` (`send_from_directory`) | `404` |
 | `DELETE /api/media/<id>` | — | `200` `{status: "ok", deleted_id: id}` (borra registro BD y archivo en disco si existe) | `404` |
-| `POST /api/mock/ir` | *(Solo habilitado con `--mock`)* `{}` | `200` `{status: "ok", simulated: true}` — inyecta detección IR en `MockArduinoTransport` para probar el flujo completo sin hardware. | `404` si no es `--mock` |
+| `POST /api/mock/ultrasonic` | *(Solo habilitado con `--mock`)* `{}` o `{"distance_cm": 12}` (`2..400`) | `200` `{status: "ok", simulated: true}` — inyecta detección ultrasónica en `MockArduinoTransport` para probar el flujo completo sin hardware. | `400` si `distance_cm` fuera de rango, `404` si no es `--mock` |
 
 ---
 
@@ -212,7 +218,7 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 │   ├── timer.h
 │   ├── stepper_motor.h
 │   ├── boton.h
-│   ├── ir_sensor.h
+│   ├── ultrasonic_sensor.h
 │   ├── status_led.h
 │   └── i2c_handlers.h
 ├── src/
@@ -220,7 +226,7 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 │   ├── timer.cpp
 │   ├── stepper_motor.cpp
 │   ├── boton.cpp
-│   ├── ir_sensor.cpp
+│   ├── ultrasonic_sensor.cpp
 │   ├── status_led.cpp
 │   ├── i2c_handlers.cpp
 │   └── main.cpp
@@ -271,23 +277,23 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 - **Tareas:**
   1. Configurar `platformio.ini` para `board = uno`, `platform = atmelavr`, `framework = arduino` (SIN `lib_deps` de `hd44780` ni FreeRTOS).
   2. Copiar y adaptar `stepper_motor.{h,cpp}` y `timer.{h,cpp}` desde `pruebas proyecto final embebidos`.
-  3. Implementar `boton.{h,cpp}` (`PD2`/`INT0`, debounce 200 ms, pull-up interno por registros) e `ir_sensor.{h,cpp}` (`PD3`/`INT1`, activo en LOW, debounce 150 ms, `ir_sensor_is_live()`, `ir_sensor_consume_latched()`, `ir_sensor_is_latched()`).
-  4. Implementar `status_led.{h,cpp}` (`PB5`/`DDRB`/`PORTB`) usando `timer_create()`.
-  5. Implementar `protocol.{h,cpp}` con el Contrato 2 (`[LEN][TYPE][PAYLOAD]`, validando `inBuf[0] == len`) e `i2c_handlers.{h,cpp}` (`Wire.begin(0x08)`, pull-ups `PC4`/`PC5` desactivados por registro, buzón `volatile` de comandos para `loop()`).
-  6. Implementar `main.cpp` integrando superloop cooperativo (`timer_loop`, `stepper_loop`, `boton_loop`, `ir_sensor_loop`, `i2c_loop` con máquina de estados de `unjam` y manejo de `manual_dispense_latched`).
+  3. Implementar `boton.{h,cpp}` (`PD2`/`INT0`, debounce 200 ms, pull-up interno por registros) y `ultrasonic_sensor.{h,cpp}` (`HC-SR04`: `PD4` `TRIG` de `10 µs` por `TCNT1`, `PD3`/`INT1` en ambos flancos + `Timer1` prescaler 8 a `0,5 µs/tick`, disparo cada `100 ms`, timeout `30 ms`, rango `2..400 cm`, filtro de 3 muestras + histéresis `+3 cm`, `ultrasonic_sensor_get_distance_cm()`, `ultrasonic_sensor_is_live()`, `ultrasonic_sensor_is_latched()`, `ultrasonic_sensor_consume_latched()`).
+  4. Implementar `status_led.{h,cpp}` (`PB5`/`DDRB`/`PORTB`, `STATUS_LED_ULTRASONIC_ACTIVE`) usando `timer_create()`.
+  5. Implementar `protocol.{h,cpp}` con el Contrato 2 (`[LEN][TYPE][PAYLOAD]`, `RSP_STATUS` y `CMD_SET_CONFIG` de 8 bytes, validando `inBuf[0] == len`) e `i2c_handlers.{h,cpp}` (`Wire.begin(0x08)`, pull-ups `PC4`/`PC5` desactivados por registro, buzón `volatile` de comandos para `loop()` incluyendo `ultrasonic_sensor_set_threshold_cm`).
+  6. Implementar `main.cpp` integrando superloop cooperativo (`timer_loop`, `stepper_loop`, `boton_loop`, `ultrasonic_sensor_loop`, `i2c_loop` con máquina de estados de `unjam` y manejo de `manual_dispense_latched`).
 - **Criterio de terminado (`done`):**
   - `pio run` compila con código de salida `0` y sin warnings críticos.
-  - `grep -rnE '\b(pinMode|digitalWrite|digitalRead|analogRead|attachInterrupt)\b' include/ src/` devuelve **0 coincidencias**.
+  - `grep -rnE '\b(pinMode|digitalWrite|digitalRead|analogRead|attachInterrupt|pulseIn|delay|delayMicroseconds)\b' include/ src/` devuelve **0 coincidencias**.
   - Uso de RAM reportado por PlatformIO `< 50%` (< 1024 bytes de 2048 bytes).
 
 #### Worker B: `rpi-i2c-db`
 - **Archivos propios:** `raspberry/requirements.txt`, `raspberry/i2c_master/*.py`, `raspberry/service/{__init__,config,database,client_sync}.py`.
 - **Tareas:**
   1. Crear `requirements.txt` (`flask>=2.0.0,<3.2.0`, `smbus2>=0.4.0`, `pytest>=7.0.0`).
-  2. Adaptar `i2c_master/protocol.py` al Contrato 2 (mismos opcodes, big-endian helpers y validación estricta de `LEN`).
-  3. Adaptar `i2c_master/transport.py`: `SMBus2Transport`, `LinuxI2CDevTransport` y `MockArduinoTransport` realista (simula tiempo de giro del stepper en pasos según `time.monotonic()`, estado `BUSY`, `unjam`, `stop`, `set_config` y método `simulate_ir_detection()`).
+  2. Adaptar `i2c_master/protocol.py` al Contrato 2 (mismos opcodes, big-endian helpers, `RSP_STATUS` y `CMD_SET_CONFIG` de 8 bytes, `StatusData.distance_cm` y validación estricta de `LEN`).
+  3. Adaptar `i2c_master/transport.py`: `SMBus2Transport`, `LinuxI2CDevTransport` y `MockArduinoTransport` realista (simula tiempo de giro del stepper en pasos según `time.monotonic()`, estado `BUSY`, `unjam`, `stop`, `set_config` con `ultrasonic_threshold_cm` y método `simulate_ultrasonic_detection()`).
   4. Implementar `i2c_master/controller.py` (`FeederMaster` con métodos `ping`, `get_status`, `dispense_steps`, `stop_motor`, `unjam`, `set_config`) y `service/client_sync.py` (`ThreadSafeFeederMaster` con `threading.Lock`).
-  5. Implementar `service/config.py` (`ServiceConfig`) y `service/database.py` (esquema completo del Contrato 3, `WAL`, seed idempotente de `settings`, CRUD completo de `schedules`, `dispense_events`, `media_captures`, y helper de poda de medios excedentes).
+  5. Implementar `service/config.py` (`ServiceConfig`) y `service/database.py` (esquema completo del Contrato 3, `WAL`, seed idempotente de `settings` con `ultrasonic_cooldown_s` y `ultrasonic_threshold_cm`, migración automática de bases previas, CRUD completo de `schedules`, `dispense_events`, `media_captures`, y helper de poda de medios excedentes).
 - **Criterio de terminado (`done`):**
   - Importación limpia de todos los módulos en Python 3 sin hardware I2C.
   - Auto-check con `MockArduinoTransport` pasando todos los comandos y casos `BUSY`/error.
@@ -316,18 +322,19 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 - **Tareas:**
   1. Implementar `service/worker.py` (`FeederWorkerThread`):
      - Polling cada `poll_interval` s (default `0.5 s`): llama `client.get_status(consume_latch=True)`.
-     - Sincroniza `steps_per_portion` y `step_interval_us` al Arduino al arrancar (o al reconectar tras fallos I2C).
-     - Si `ir_latched`: verifica `ir_cooldown_s`; si pasó el cooldown, encola captura asíncrona en `ThreadPoolExecutor(max_workers=1)` según `capture_mode` (`photo` o `video`), guarda registro en `media_captures` y ejecuta rotación `max_media_files`.
+     - Sincroniza `steps_per_portion`, `step_interval_us` y `ultrasonic_threshold_cm` al Arduino al arrancar (o al reconectar tras fallos I2C).
+     - Si `ultrasonic_latched`: verifica `ultrasonic_cooldown_s`; si pasó el cooldown, encola captura asíncrona en `ThreadPoolExecutor(max_workers=1)` según `capture_mode` (`photo` o `video`), guarda registro en `media_captures` con `trigger='ultrasonic'` y ejecuta rotación `max_media_files`.
      - Si `manual_dispense_latched`: inserta evento `source='manual_button'` en `dispense_events`.
      - Scheduler de horarios fijos (`schedules`): en cada tick compara `datetime.now().strftime("%H:%M")` y fecha `YYYY-MM-DD`; si coincide con un horario habilitado aún no disparado hoy, marca `last_triggered_date` y dispensa `portions * steps_per_portion` registrando el resultado en `dispense_events`.
      - Scheduler por intervalo (`interval_enabled`): si transcurrieron `>= interval_minutes` desde `last_interval_run_at` (o si nunca corrió, inicializar referencia al habilitar o ejecutar según corresponda — documentar que al habilitar se agenda para `now + interval_minutes`), dispensa `interval_portions * steps_per_portion` y actualiza `last_interval_run_at`.
   2. Implementar `service/api.py` con TODOS los endpoints del Contrato 4 y validaciones de entrada en todos los límites de confianza (formato `HH:MM`, rangos numéricos, saneo de nombres de archivo).
-  3. Crear `service/web/index.html`: página simple sin frameworks externos con 5 bloques funcionales:
+  3. Crear `service/web/index.html`: página simple sin frameworks externos con bloques funcionales claros:
      - Estado en vivo (autorefresh cada 3 s) + botones **Dispensar ahora**, **Destrabar**, **Parada de emergencia**, **Capturar ahora**.
-     - Configuración (pasos por porción, velocidad, modo foto/video, duración video, cooldown IR, retención máxima, modo intervalo).
+     - Panel **Debugging** (oculto por defecto) con tarjeta **Sensor ultrasónico** (`distance_cm` en vivo + estado de presencia) y botón **Simular detección ultrasónica (mock)** (`POST /api/mock/ultrasonic`).
+     - Configuración de usuario (porción, modo foto/video, duración video, retención máxima, modo intervalo; manteniendo ocultos `step_interval_us`, `ultrasonic_cooldown_s` y `ultrasonic_threshold_cm`, configurables únicamente vía `POST /api/config`).
      - Tabla CRUD de horarios fijos (`HH:MM`, porciones, activar/desactivar, eliminar).
      - Historial reciente de dispensados.
-     - Galería de fotos/videos con fecha/hora, disparador (`ir`/`manual`), reproductor inline (`<img>`/`<video controls>`) y botón eliminar.
+     - Galería de fotos/videos con fecha/hora, etiqueta de disparador (`Mascota detectada` para `ultrasonic` / `Manual` para `manual`), reproductor inline (`<img>`/`<video controls>`) y botón eliminar.
   4. Crear `run_service.py` (CLI con `--mock`, `--bus`, `--addr`, `--db`, `--media-dir`, `--host`, `--port`, `--poll-interval`, `--debug`, cierre limpio con `SIGINT`/`SIGTERM`), `pet-feeder.service` y `README.md` con guía rápida de compilación/despliegue.
 - **Criterio de terminado (`done`):**
   - `python3 raspberry/run_service.py --mock --port 5055` levanta sin errores y responde en `/` y `/api/status`.
@@ -335,13 +342,13 @@ Proyecto-Final-Sistemas-Embebidos-Lutz-Piazza/
 #### Worker E: `qa-verification`
 - **Archivos propios:** `raspberry/tests/*.py`.
 - **Tareas:**
-  1. `test_protocol.py`: round-trip de todos los comandos/respuestas (con relleno `0xFF`), paso sin modificaciones de bytes binarios crudos en payload, validación de `LEN` inválido/truncado/exacto, y **test de consistencia C++ vs Python** que parsea `include/protocol.h` y verifica que todos los opcodes coincidan exactamente con `raspberry/i2c_master/protocol.py`.
-  2. `test_database.py`: init idempotente, settings defaults y updates, CRUD de `schedules`, historial `dispense_events`, `media_captures` y poda por `max_media_files`.
+  1. `test_protocol.py`: round-trip de todos los comandos/respuestas (incluyendo `RSP_STATUS` y `CMD_SET_CONFIG` de 8 bytes con `distance_cm` válido y `ULTRASONIC_NO_ECHO_CM = 0xFFFF`, con relleno `0xFF`), paso sin modificaciones de bytes binarios crudos en payload, validación de `LEN` inválido/truncado/exacto, y **test de consistencia C++ vs Python** que parsea `include/protocol.h` y verifica que todos los opcodes y constantes coincidan exactamente con `raspberry/i2c_master/protocol.py`.
+  2. `test_database.py`: init idempotente, settings defaults (`ultrasonic_cooldown_s=30`, `ultrasonic_threshold_cm=20`), migración automática de bases previas, CRUD de `schedules`, historial `dispense_events`, `media_captures` (`trigger='ultrasonic'`) y poda por `max_media_files`.
   3. `test_camera.py`: autodetección de binarios (con `monkeypatch` sobre `shutil.which`), captura `photo`/`video` en modo mock, `CameraBusyError` concurrente y borrado seguro.
-  4. `test_worker.py`: simulación de evento IR + verificación de captura y respeto de `ir_cooldown_s`, disparo único de horario fijo `HH:MM`, disparo por intervalo y registro de `manual_button`.
-  5. `test_api.py`: tests Flask `test_client()` cubriendo todos los endpoints del Contrato 4 (happy paths, `400`, `404`, `409 BUSY`, `GET /media/<filename>`, `POST /api/mock/ir`).
+  4. `test_worker.py`: simulación de detección ultrasónica + verificación de captura (`trigger='ultrasonic'`) y respeto de `ultrasonic_cooldown_s`, sincronización de los 3 parámetros en `set_config`, disparo único de horario fijo `HH:MM`, disparo por intervalo y registro de `manual_button`.
+  5. `test_api.py`: tests Flask `test_client()` cubriendo todos los endpoints del Contrato 4 (happy paths, `400`, `404`, `409 BUSY`, `GET /api/status` con `ultrasonic_live`/`distance_cm`, `POST /api/config` con `ultrasonic_threshold_cm`/`ultrasonic_cooldown_s`, `GET /media/<filename>`, `POST /api/mock/ultrasonic`).
 - **Criterio de terminado (`done`):**
-  - `pytest raspberry/tests -v` pasa 100% en modo offline/mock.
+  - `python3 -m unittest discover -s raspberry/tests -v` pasa 100% en modo offline/mock.
 
 ---
 
@@ -354,17 +361,18 @@ Ejecutar y confirmar todos los ítems antes de dar por concluida la implementaci
 pio run
 
 # 2. Auditoría de registros AVR (debe devolver vacío / exit 1 de grep)
-grep -rnE '\b(pinMode|digitalWrite|digitalRead|analogRead|attachInterrupt)\b' include/ src/
+grep -rnE '\b(pinMode|digitalWrite|digitalRead|analogRead|attachInterrupt|pulseIn|delay|delayMicroseconds)\b' include/ src/
 
 # 3. Suite completa de tests Python + consistencia C++/Python
-pytest raspberry/tests -v
+python3 -m unittest discover -s raspberry/tests -v
 
 # 4. Smoke test end-to-end en modo mock
 python3 raspberry/run_service.py --mock --port 5055 --db /tmp/test_feeder.db --media-dir /tmp/test_media
 # Verificar en otra terminal:
 #   curl -s http://localhost:5055/api/status
+#   curl -s -X POST http://localhost:5055/api/config -H 'Content-Type: application/json' -d '{"ultrasonic_threshold_cm":20,"ultrasonic_cooldown_s":30}'
 #   curl -s -X POST http://localhost:5055/api/dispense -H 'Content-Type: application/json' -d '{"portions":1}'
-#   curl -s -X POST http://localhost:5055/api/mock/ir
+#   curl -s -X POST http://localhost:5055/api/mock/ultrasonic -H 'Content-Type: application/json' -d '{"distance_cm":12}'
 #   curl -s http://localhost:5055/api/media
 ```
 

@@ -14,7 +14,7 @@
 - Cables jumper macho-hembra y macho-macho + mini protoboard (o bornera para distribuir `GND` y `5 V`).
 
 ### 1.2 Electrónica a conseguir
-- 1× **Sensor infrarrojo de obstáculos digital `FC-51` / `HW-201`** (3 pines: `VCC`, `GND`, `OUT`; con LED indicador y potenciómetro azul de ajuste de distancia; activo en `LOW`).
+- 1× **Sensor ultrasónico de distancia `HC-SR04`** (4 pines: `VCC`, `TRIG`, `ECHO`, `GND`; alimentación `5 V`, ~15 mA, rango útil `2–400 cm`, ángulo de haz ~15°).
 - 1× **Fuente de 5 V / 1 A a 2 A exclusiva para el `ULN2003`** (puede ser un cargador de celular viejo + cable USB reciclado pelado en rojo `+5 V` / negro `GND`, o un módulo adaptador USB-a-bornera).
 - 1× **Pulsador táctil (push button) normalmente abierto** (opcional, para dispensado manual en `D2`).
 - 1× **Capacitor electrolítico de 470 µF o 1000 µF (≥ 10 V)** *(muy recomendado)* para colocar en paralelo en los pines de alimentación del `ULN2003` y absorber picos inductivos.
@@ -27,7 +27,7 @@
 - **Hélice del sinfín:** 2–3 botellas PET limpias cortadas en láminas/discos y planchadas con cuidado (o goma EVA gruesa / cartón laminado con cinta plástica).
 - **Acople al motor:** 3 cm de manguera cristal flexible Ø 5–6 mm o tubo de lapicera + 2 precintos chicos + pegamento epoxi (Poxipol) o silicona caliente.
 - **Estructura / chasis:** Caja de cartón doble pared reforzada, madera MDF/fibrofácil reciclada, o base plástica estable con peso en la base (para que no vuelque).
-- **Plato de comida:** Recipiente bajo (tupper/bowl) posicionado fijo respecto a la estructura para mantener constante la distancia al sensor IR y a la cámara.
+- **Plato de comida:** Recipiente bajo (tupper/bowl) posicionado fijo respecto a la estructura para mantener constante la distancia al sensor ultrasónico y a la cámara.
 - **Insumos de armado:** Pistola de silicona caliente, cinta aisladora/duct tape, precintos, cúter/tijera fuerte, regla, marcador, plancha (para alisar PET usando papel manteca o trapo encima).
 - **Alimento para pruebas:** Alimento balanceado de **grano chico** (gato o perro pequeño, Ø 5–8 mm). **Clave:** el `28BYJ-48` tiene bajo torque (~34 mN·m); granos grandes de perro grande traban cualquier sinfín casero.
 
@@ -38,8 +38,8 @@
 | Etapa | Integrante A — Mecánica y Chasis | Integrante B — Electrónica, Cableado y Sensores |
 | :--- | :--- | :--- |
 | **Fase 1** | Cortar tubo de 20–25 cm, fabricar hélice de PET y eje del sinfín, hacer pruebas de giro manual con alimento chico. | Armar el cableado en protoboard/bornera (RPi + Arduino + ULN2003 con fuente separada + botón `D2`), verificar `i2cdetect -y 1` y pruebas de motor en vacío. |
-| **Fase 2** | Fabricar acople al `28BYJ-48`, fijar el motor centrado en el extremo trasero del tubo y acoplar la tolva de botella invertida. | Integrar sensor `FC-51` en `D3`, montar Pi Camera V2 con soporte elevado y verificar encuadre/foco y detección IR. |
-| **Fase 3 (Juntos)** | Integrar electrónica protegida en la parte superior/trasera de la carcasa, calibrar gramos por vuelta (`steps_per_portion`), probar anti-atasco (`unjam`) y ensayo continuo. |
+| **Fase 2** | Fabricar acople al `28BYJ-48`, fijar el motor centrado en el extremo trasero del tubo y acoplar la tolva de botella invertida. | Integrar sensor ultrasónico `HC-SR04` en `D4` (`TRIG`) / `D3` (`ECHO`), montar Pi Camera V2 con soporte elevado y verificar encuadre/foco y lecturas de `distance_cm`. |
+| **Fase 3 (Juntos)** | Integrar electrónica protegida en la parte superior/trasera de la carcasa, calibrar gramos por vuelta (`steps_per_portion`), ajustar `ultrasonic_threshold_cm`, probar anti-atasco (`unjam`) y ensayo continuo. |
 
 ---
 
@@ -59,7 +59,7 @@
    Acople                                 │   │
    centrado                               ▼   ▼  Caída libre al plato
                                       ┌───────────┐
-           [Cámara V2] ──(35 cm)──►   │   PLATO   │ ◄── [FC-51 IR] (8–12 cm)
+           [Cámara V2] ──(35 cm)──►   │   PLATO   │ ◄── [HC-SR04] (cono ~15°, umbral 20 cm)
                                       └───────────┘
 ```
 
@@ -86,13 +86,14 @@ El eje del `28BYJ-48` tiene **5 mm de diámetro con dos caras planas** (3 mm ent
 - **Truco anti-atasco:** redondear o biselar el borde delantero de la ventana del tubo (o pegar una lengüeta flexible de goma EVA/PET blando justo en el borde superior donde pasan los granos). Así, si un grano queda atrapado entre la hélice y el borde del tubo, la lengüeta cede en lugar de clavar el motor.
 - Encajar el pico/embudo de la botella tolva sobre esa ventana y sellar por fuera con silicona caliente. Dejar la parte superior de la botella con tapa desmontable para recargar el alimento.
 
-### 3.5 Soporte de Cámara V2 y Sensor IR `FC-51`
+### 3.5 Soporte de Cámara V2 y Sensor Ultrasónico `HC-SR04`
 - **Pi Camera V2 (8 MP):**
   - Es de **foco fijo** (nitidez óptima a partir de **35–40 cm**). Montarla en un brazo/mástil de cartón rígido o PVC a **30–40 cm de altura**, inclinada ~35° hacia el plato.
   - Cuidar el cable flex CSI: no doblarlo a 90° filoso ni pegarlo junto a los cables de bobinas del stepper (ruido EMI).
-- **Sensor IR `FC-51`:**
-  - Montar en un lateral del plato a la altura del hocico/pecho de la mascota (**8–15 cm del centro del plato**), apuntando **horizontalmente** sobre el borde del plato (nunca apuntando hacia la comida dentro del plato, porque dispararía todo el tiempo).
-  - Evitar luz solar directa sobre el fotodiodo receptor (si hay ventana cerca, agregar una pequeña visera/tubito de cartón negro de 1–2 cm alrededor de los LEDs del `FC-51`).
+- **Sensor ultrasónico `HC-SR04`:**
+  - Montar junto al plato a la **altura del hocico/pecho de la mascota**, apuntando **horizontalmente** sobre la zona de alimentación (nunca apuntando hacia abajo a la comida dentro del plato ni al suelo).
+  - Mantener **despejado un cono libre (~15°)** frente a los transductores del `HC-SR04`, sin paredes, bordes del chasis ni objetos fijos a una distancia menor a `ultrasonic_threshold_cm` (default `20 cm`), para evitar falsos positivos permanentes.
+  - **Ventaja clave frente a sensores IR:** al operar por tiempo de vuelo acústico (40 kHz), el `HC-SR04` es **inmune a la luz solar directa** y a variaciones de iluminación o color del pelaje (no requiere visera ni ajustes por reflejos ópticos).
 - **Compartimento electrónico:** Ubicar RPi, Arduino y `ULN2003` en un compartimento superior o trasero **separado físicamente del polvo del alimento** y con ranuras de ventilación (especialmente sobre el `ULN2003` y el SoC de la RPi).
 
 ---
@@ -113,10 +114,11 @@ El eje del `28BYJ-48` tiene **5 mm de diámetro con dos caras planas** (3 mm ent
  │                      │                   │  D8..D11  ├──► IN1..IN4 ──► [28BYJ-48]
  │  Pin 3 (GPIO2 / SDA) ├───────────────────┤ A4 (SDA)  │
  │  Pin 5 (GPIO3 / SCL) ├───────────────────┤ A5 (SCL)  │
- │  Pin 6 (GND)         ├──────────┬────────┤ GND       ├───────────────── GND (COMÚN)
- │                      │          │        │           │
- │  CSI Ribbon ──► [Pi Camera V2]  │        │  D3 (INT1)│◄── OUT [Sensor FC-51]
- └──────────────────────┘          │        │  5V / GND ├──► VCC / GND [FC-51]
+ │  Pin 6 (GND)         ├──────────┬────────┤ GND (*)   ├───────────────── GND (COMÚN)
+ │                      │          │        │           │   (*) Punto estrella GND
+ │  CSI Ribbon ──► [Pi Camera V2]  │        │  D4 (PD4) ├──► TRIG [HC-SR04]
+ └──────────────────────┘          │        │  D3 (INT1)│◄── ECHO [HC-SR04]
+                                   │        │  5V / GND ├──► VCC / GND [HC-SR04] (directo al Arduino)
                                    │        │           │
                                    │        │  D2 (INT0)│◄── [Botón manual] ── GND
                                    │        │  D13 (LED)│ (LED integrado en placa)
@@ -129,10 +131,11 @@ El eje del `28BYJ-48` tiene **5 mm de diámetro con dos caras planas** (3 mm ent
 | :--- | :--- | :--- | :--- |
 | **I2C SDA** | RPi Pin 3 (`GPIO2`) | Arduino `A4` (`PC4`) | Pull-ups internas del Arduino desactivadas en firmware. |
 | **I2C SCL** | RPi Pin 5 (`GPIO3`) | Arduino `A5` (`PC5`) | Cables cortos (< 25 cm) para evitar ruido. |
-| **Masa común (`GND`)** | RPi Pin 6 (`GND`) | Arduino `GND` + `ULN2003 (-)` + `FC-51 GND` + Botón | **Obligatorio** unir todas las masas en un punto común; sin GND común I2C y el ULN2003 fallan. |
+| **Masa común (`GND`)** | RPi Pin 6 (`GND`) + `ULN2003 (-)` + Botón | Pines `GND` del Arduino UNO (punto estrella) | **Obligatorio** unir todas las masas en un punto estrella común en el Arduino; sin GND común I2C y el ULN2003 fallan. |
 | **Stepper IN1..IN4** | Arduino `D8, D9, D10, D11` | `ULN2003 IN1, IN2, IN3, IN4` | Mantiene compatibilidad exacta con `PORTB` (`PB0..PB3`). |
 | **Potencia Motor** | Fuente 5 V externa (`+` / `-`) | `ULN2003 (+5V / -)` | Verificar que el jumper del módulo `ULN2003` esté puesto. **NO conectar `+5V` de esta fuente al `5V` de la RPi ni del Arduino.** |
-| **Sensor IR `FC-51`** | Arduino `5V`, `GND`, `D3` | `FC-51 VCC, GND, OUT` | Consumo bajo (~20 mA), puede tomar 5 V del Arduino. |
+| **`HC-SR04` Alimentación** | Arduino `5V` y `GND` | `HC-SR04 VCC` y `GND` | Conectar **directamente a los pines `5V` y `GND` del Arduino UNO** (~15 mA) para disponer de una referencia limpia alejada del ruido de conmutación del `ULN2003`, manteniendo el punto estrella de `GND` común en el Arduino. |
+| **`HC-SR04` `TRIG` / `ECHO`** | Arduino `D4` (`PD4`) y `D3` (`PD3`/`INT1`) | `HC-SR04 TRIG` y `ECHO` | `D4` genera el pulso `TRIG` de `10 µs` con `TCNT1`; `D3` lee `ECHO` (push-pull 0–5 V, sin pull-up interno) con `INT1` en ambos flancos + `Timer1`. |
 | **Botón manual** | Arduino `D2` (`INT0`) | Un terminal del pulsador; el otro a `GND` | Usa pull-up interno de `PD2` (no requiere resistencia externa). |
 | **Cámara V2** | Conector `CAMERA` (CSI) de RPi | Pi Camera V2 | Instalar con la RPi **apagada**. Contactos plateados hacia el puerto HDMI (lado azul hacia los puertos USB/Ethernet). |
 
@@ -169,12 +172,19 @@ El eje del `28BYJ-48` tiene **5 mm de diámetro con dos caras planas** (3 mm ent
    - Si el motor pierde pasos bajo carga, subir `step_interval_us` de `2000` a `2500` o `3000` µs en `/api/config` (más lento = más torque efectivo).
 4. Probar el botón **Destrabar** y el botón físico `D2`.
 
-### Paso 4 — Ajuste del Sensor IR `FC-51` y Cámara V2
-1. Con la mano (o un objeto del tamaño de la mascota) a ~10–15 cm frente al plato, girar suavemente el potenciómetro azul del `FC-51` hasta que el LED de detección verde/rojo se encienda **solo** cuando el objeto entra en la zona del plato y se apague al retirarlo.
-2. Verificar en la web que al pasar la mano:
-   - Aparece la foto (o video de 5 s si cambiaste a modo `video`) en la galería con fecha y hora correctas.
-   - Si pasás la mano de nuevo antes del `ir_cooldown_s` (30 s), NO dispara otra captura repetida.
-3. Revisar la foto capturada para corregir el ángulo y distancia de la cámara (confirmar buena iluminación y nitidez).
+### Paso 4 — Calibración del Sensor Ultrasónico `HC-SR04` y Cámara V2
+1. Con el plato vacío y el cono (~15°) frente al `HC-SR04` libre de obstáculos fijos, abrir la interfaz web (`http://<IP_RPI>:5000`) y activar el interruptor **Debugging** (apagado por defecto) para leer en vivo **`distance_cm`** en la tarjeta **Sensor ultrasónico**.
+2. Confirmar que sin mascota frente al plato la lectura sea `Sin lectura` o una distancia claramente mayor al umbral (default `20 cm`), sin falsos disparos por paredes cercanas.
+3. Acercar la mano (o un objeto del tamaño de la mascota) frente al plato a la distancia real de alimentación (~10–20 cm) y observar el valor de `distance_cm` en vivo. Si necesitás ajustar el umbral (`ultrasonic_threshold_cm`, rango `5..200 cm`) o el tiempo mínimo entre capturas (`ultrasonic_cooldown_s`, default `30 s`, rango `5..600 s`), hacerlo vía `POST /api/config` (estos parámetros técnicos no se exponen en la web):
+   ```bash
+   curl -X POST http://<IP_RPI>:5000/api/config \
+     -H "Content-Type: application/json" \
+     -d '{"ultrasonic_threshold_cm": 20, "ultrasonic_cooldown_s": 30}'
+   ```
+4. Verificar en la web que al mantener la mano dentro del umbral (~300 ms, 3 lecturas consecutivas):
+   - El estado cambia a **Presencia detectada** y aparece la foto (o video de 5 s si cambiaste a modo `video`) en la galería con etiqueta **Mascota detectada** y fecha/hora correctas.
+   - Si volvés a pasar la mano antes de cumplir `ultrasonic_cooldown_s` (30 s), NO dispara otra captura repetida.
+5. Revisar la foto capturada para corregir el ángulo y distancia de la cámara (confirmar buena iluminación y nitidez).
 
 ---
 
@@ -182,7 +192,7 @@ El eje del `28BYJ-48` tiene **5 mm de diámetro con dos caras planas** (3 mm ent
 
 - [ ] **Hora real (NTP):** verificar con `date` en la RPi que la fecha/hora local sea correcta antes de la demo.
 - [ ] **Demostración en vivo rápida:** crear un horario fijo 2 minutos adelante (o modo intervalo de 1 min) para mostrar el dispensado automático sin esperar horas.
-- [ ] **Simulación de mascota:** acercar mano/peluche al `FC-51` y mostrar la foto/video recién capturado en la galería web con timestamp.
+- [ ] **Simulación de mascota:** activar **Debugging**, acercar mano/peluche frente al `HC-SR04` (dentro de `ultrasonic_threshold_cm`), mostrar `distance_cm` en vivo y la foto/video recién capturado en la galería web con timestamp.
 - [ ] **Control de atasco y emergencia:** mostrar botón manual `D2`, "Destrabar" y "Parada de emergencia" en la web.
 - [ ] **Respaldo de red:** llevar configurado hotspot del celular en la RPi por si el Wi-Fi de la facultad bloquea conexiones locales entre dispositivos (AP isolation).
-- [ ] **Defensa técnica lista:** saber explicar manejo de registros AVR (`DDRB/PORTB`, `EICRA/EIMSK`, `TCCR2A/B`), por qué se desactivan pull-ups en `PC4/PC5`, por qué el superloop cooperativo entra sobrado en 2 KB de SRAM sin FreeRTOS, y cómo el framing `[LEN][TYPE][PAYLOAD]` sobre I2C + *mutex* + *latch* de IR garantizan robustez en la comunicación.
+- [ ] **Defensa técnica lista:** saber explicar manejo de registros AVR (`DDRB/PORTB`, `DDRD/PORTD/PIND`, `EICRA/EIFR/EIMSK`, `Timer1` `TCCR1A/B` + `TCNT1`, `Timer2` `TCCR2A/B`), cómo mide el `HC-SR04` de forma 100% no bloqueante (`Timer1` a `0,5 µs/tick` + `INT1` en ambos flancos + pulso `TRIG` de `10 µs` con `TCNT1` sin `pulseIn()` ni `delayMicroseconds()` + filtro de 3 muestras consecutivas e histéresis de `3 cm`), por qué se desactivan pull-ups en `PC4/PC5`, por qué el superloop cooperativo entra sobrado en 2 KB de SRAM sin FreeRTOS, y cómo el framing `[LEN][TYPE][PAYLOAD]` sobre I²C + *mutex* + *latch* ultrasónico garantizan robustez en la comunicación.

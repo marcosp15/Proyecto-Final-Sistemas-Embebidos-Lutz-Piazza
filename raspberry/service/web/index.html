@@ -777,14 +777,14 @@
   <section id="debug-panel" class="debug-panel debug-only" aria-label="Panel técnico de debugging">
     <div class="debug-panel-head">
       <h2>Estado técnico en vivo (Debugging)</h2>
-      <button type="button" id="btn-mock-ir" class="secondary sm" style="display: none;">Simular IR (mock)</button>
+      <button type="button" id="btn-mock-ultrasonic" class="secondary sm" style="display: none;">Simular detección ultrasónica (mock)</button>
     </div>
     <div class="stat-grid">
       <div class="stat stat-highlight"><strong>Acción actual</strong><span id="st-action">En espera</span></div>
       <div class="stat"><strong>Modo</strong><span id="st-mode">-</span></div>
       <div class="stat"><strong>Arduino I2C</strong><span id="st-arduino">-</span></div>
       <div class="stat"><strong>Motor / Pasos</strong><span id="st-motor">-</span></div>
-      <div class="stat"><strong>Sensor IR (vivo)</strong><span id="st-ir">-</span></div>
+      <div class="stat"><strong>Sensor ultrasónico</strong><span id="st-ultrasonic">-</span></div>
       <div class="stat"><strong>Próximo horario</strong><span id="st-next">-</span></div>
       <div class="stat"><strong>Cámara</strong><span id="st-camera">-</span></div>
       <div class="stat"><strong>Hora servidor</strong><span id="st-time">-</span></div>
@@ -1119,7 +1119,7 @@ function friendlyStatus(status) {
 }
 
 function friendlyTrigger(trigger) {
-  if (trigger === "ir") return "Mascota detectada";
+  if (trigger === "ultrasonic") return "Mascota detectada";
   if (trigger === "manual") return "Manual";
   return trigger || "Captura";
 }
@@ -1183,7 +1183,10 @@ async function refreshStatus() {
     document.getElementById("st-motor").textContent = a.motor_busy
       ? `Girando (${a.steps_remaining ?? 0} pasos)`
       : "Libre";
-    document.getElementById("st-ir").textContent = a.ir_live ? "Presencia detectada" : "Sin presencia";
+    const hasDist = a.distance_cm !== null && a.distance_cm !== undefined;
+    document.getElementById("st-ultrasonic").textContent = hasDist
+      ? `${a.distance_cm} cm — ${a.ultrasonic_live ? "Presencia detectada" : "Sin presencia"}`
+      : (a.ultrasonic_live ? "Presencia detectada" : "Sin lectura");
 
     if (w.next_schedule) {
       const ns = w.next_schedule;
@@ -1197,7 +1200,7 @@ async function refreshStatus() {
 
     document.getElementById("st-camera").textContent = `${c.backend || "-"}${c.capturing ? " (capturando...)" : ""}`;
     document.getElementById("st-time").textContent = formatDateTime(data.server_time);
-    document.getElementById("btn-mock-ir").style.display = data.mode === "mock" ? "inline-flex" : "none";
+    document.getElementById("btn-mock-ultrasonic").style.display = data.mode === "mock" ? "inline-flex" : "none";
   } catch (err) {
     if (isDebug()) {
       notify(`Error consultando estado: ${err.message}`, true);
@@ -1503,7 +1506,7 @@ async function loadMedia(force = false) {
       badges.className = "media-badges";
 
       const bTrig = document.createElement("span");
-      bTrig.className = `badge ${item.trigger === "ir" ? "accent" : ""}`;
+      bTrig.className = `badge ${item.trigger === "ultrasonic" ? "accent" : ""}`;
       bTrig.textContent = friendlyTrigger(item.trigger);
 
       const bType = document.createElement("span");
@@ -1621,7 +1624,7 @@ async function loadHistory(force = false) {
   }
 }
 
-// --- Acciones rápidas y mock IR ---
+// --- Acciones rápidas y mock ultrasónico ---
 document.getElementById("btn-dispense").addEventListener("click", async () => {
   const portions = parseInt(document.getElementById("dispense-portions").value, 10);
   setLocalAction(`Enviando dispensado (${portions} porc.)...`, 3000);
@@ -1674,11 +1677,11 @@ document.getElementById("btn-stop").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("btn-mock-ir").addEventListener("click", async () => {
-  setLocalAction("Simulando detección IR...", 3000);
+document.getElementById("btn-mock-ultrasonic").addEventListener("click", async () => {
+  setLocalAction("Simulando detección ultrasónica...", 3000);
   try {
-    await api("/api/mock/ir", { method: "POST", body: JSON.stringify({}) });
-    notify("Detección IR simulada.");
+    await api("/api/mock/ultrasonic", { method: "POST", body: JSON.stringify({}) });
+    notify("Detección ultrasónica simulada.");
     setTimeout(() => {
       refreshStatus();
       loadMedia();

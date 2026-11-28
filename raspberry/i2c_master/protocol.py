@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass
 import struct
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 DEFAULT_SLAVE_ADDR: int = 0x08
 DEFAULT_I2C_BUS: int = 1
@@ -34,8 +34,8 @@ STATUS_REQ_CONSUME_LATCH: int = 0x01
 
 # Bitmask status_flags (byte 0 de RSP_STATUS)
 FLAG_MOTOR_BUSY: int = 0x01
-FLAG_IR_LATCHED: int = 0x02
-FLAG_IR_LIVE: int = 0x04
+FLAG_ULTRASONIC_LATCHED: int = 0x02
+FLAG_ULTRASONIC_LIVE: int = 0x04
 FLAG_MANUAL_DISPENSE_LATCHED: int = 0x08
 
 # Códigos de error (RSP_ERROR)
@@ -58,6 +58,10 @@ MAX_MANUAL_STEPS: int = 40960
 DEFAULT_STEP_INTERVAL_US: int = 1000
 MIN_STEP_INTERVAL_US: int = 1000
 MAX_STEP_INTERVAL_US: int = 10000
+ULTRASONIC_NO_ECHO_CM: int = 0xFFFF
+DEFAULT_ULTRASONIC_THRESHOLD_CM: int = 20
+MIN_ULTRASONIC_THRESHOLD_CM: int = 5
+MAX_ULTRASONIC_THRESHOLD_CM: int = 200
 
 CMD_NAMES: Dict[int, str] = {
     CMD_GET_STATUS: "CMD_GET_STATUS",
@@ -104,25 +108,27 @@ class DecodedPacket:
 
 @dataclass(frozen=True)
 class StatusData:
-    """Estado estructurado recibido en RSP_STATUS (6 bytes)."""
+    """Estado estructurado recibido en RSP_STATUS (8 bytes)."""
 
     motor_busy: bool
-    ir_latched: bool
-    ir_live: bool
+    ultrasonic_latched: bool
+    ultrasonic_live: bool
     manual_dispense_latched: bool
     steps_remaining: int
     last_error: int
+    distance_cm: Optional[int]
     raw_flags: int
 
     def to_dict(self) -> Dict[str, object]:
         return {
             "motor_busy": self.motor_busy,
-            "ir_latched": self.ir_latched,
-            "ir_live": self.ir_live,
+            "ultrasonic_latched": self.ultrasonic_latched,
+            "ultrasonic_live": self.ultrasonic_live,
             "manual_dispense_latched": self.manual_dispense_latched,
             "steps_remaining": self.steps_remaining,
             "last_error": self.last_error,
             "last_error_name": ERROR_NAMES.get(self.last_error, f"0x{self.last_error:02X}"),
+            "distance_cm": self.distance_cm,
             "raw_flags": self.raw_flags,
         }
 
@@ -151,21 +157,28 @@ def unpack_u16(data: bytes, offset: int = 0) -> int:
     return struct.unpack_from(">H", data, offset)[0]
 
 
-def encode_status_payload(flags: int, steps_remaining: int, last_error: int) -> bytes:
-    return struct.pack(">BiB", flags & 0xFF, steps_remaining, last_error & 0xFF)
+def encode_status_payload(
+    flags: int,
+    steps_remaining: int,
+    last_error: int,
+    distance_cm: Optional[int] = None,
+) -> bytes:
+    raw_distance = ULTRASONIC_NO_ECHO_CM if distance_cm is None else (int(distance_cm) & 0xFFFF)
+    return struct.pack(">BiBH", flags & 0xFF, steps_remaining, last_error & 0xFF, raw_distance)
 
 
 def decode_status_payload(payload: bytes) -> StatusData:
-    if len(payload) != 6:
-        raise ValueError(f"Payload RSP_STATUS inválido: longitud {len(payload)}, esperada 6")
-    flags, steps_remaining, last_error = struct.unpack(">BiB", payload)
+    if len(payload) != 8:
+        raise ValueError(f"Payload RSP_STATUS inválido: longitud {len(payload)}, esperada 8")
+    flags, steps_remaining, last_error, raw_distance = struct.unpack(">BiBH", payload)
     return StatusData(
         motor_busy=bool(flags & FLAG_MOTOR_BUSY),
-        ir_latched=bool(flags & FLAG_IR_LATCHED),
-        ir_live=bool(flags & FLAG_IR_LIVE),
+        ultrasonic_latched=bool(flags & FLAG_ULTRASONIC_LATCHED),
+        ultrasonic_live=bool(flags & FLAG_ULTRASONIC_LIVE),
         manual_dispense_latched=bool(flags & FLAG_MANUAL_DISPENSE_LATCHED),
         steps_remaining=steps_remaining,
         last_error=last_error,
+        distance_cm=None if raw_distance == ULTRASONIC_NO_ECHO_CM else raw_distance,
         raw_flags=flags,
     )
 

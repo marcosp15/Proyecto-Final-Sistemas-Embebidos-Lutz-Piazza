@@ -140,7 +140,8 @@ def create_app(
                     "connected": True,
                     "motor_busy": st.motor_busy,
                     "steps_remaining": st.steps_remaining,
-                    "ir_live": st.ir_live,
+                    "ultrasonic_live": st.ultrasonic_live,
+                    "distance_cm": st.distance_cm,
                     "last_error": st.last_error,
                 }
             except FeederI2CError:
@@ -148,7 +149,8 @@ def create_app(
                     "connected": False,
                     "motor_busy": False,
                     "steps_remaining": 0,
-                    "ir_live": False,
+                    "ultrasonic_live": False,
+                    "distance_cm": None,
                     "last_error": 0,
                 }
 
@@ -269,9 +271,14 @@ def create_app(
             "steps_per_portion" in data
             or "turns_per_portion" in data
             or "step_interval_us" in data
+            or "ultrasonic_threshold_cm" in data
         ):
             try:
-                client.set_config(cfg["steps_per_portion"], cfg["step_interval_us"])
+                client.set_config(
+                    cfg["steps_per_portion"],
+                    cfg["step_interval_us"],
+                    cfg["ultrasonic_threshold_cm"],
+                )
                 arduino_synced = True
             except FeederI2CError as exc:
                 logger.warning("Config guardada en BD pero falló sync con Arduino: %s", exc)
@@ -619,11 +626,19 @@ def create_app(
         camera.delete_file(deleted["filename"])
         return jsonify({"status": "ok", "deleted_id": media_id}), 200
 
-    @app.route("/api/mock/ir", methods=["POST"])
-    def api_mock_ir():
+    @app.route("/api/mock/ultrasonic", methods=["POST"])
+    def api_mock_ultrasonic():
         if not client.is_mock:
             return _error_response("Endpoint solo habilitado en modo --mock", 404)
-        client.simulate_ir_detection()
-        return jsonify({"status": "ok", "simulated": True}), 200
+        data = request.get_json(silent=True)
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            return _error_response("El cuerpo debe ser un objeto JSON", 400)
+        distance_cm = data.get("distance_cm", 12)
+        if not _is_strict_int(distance_cm) or not (2 <= distance_cm <= 400):
+            return _error_response("'distance_cm' debe ser entero entre 2 y 400", 400)
+        client.simulate_ultrasonic_detection(distance_cm=distance_cm)
+        return jsonify({"status": "ok", "simulated": True, "distance_cm": distance_cm}), 200
 
     return app

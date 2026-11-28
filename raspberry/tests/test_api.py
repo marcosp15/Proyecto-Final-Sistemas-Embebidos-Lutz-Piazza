@@ -82,7 +82,7 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
             ("POST", "/api/media/capture"),
             ("GET", "/media/<path:filename>"),
             ("DELETE", "/api/media/<int:media_id>"),
-            ("POST", "/api/mock/ir"),
+            ("POST", "/api/mock/ultrasonic"),
         }
         self.assertEqual(routes, expected)
 
@@ -113,7 +113,7 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
             )
 
         # Redesigned UI exposes user-facing fields (turns_per_portion, schedule_mode, camera, interval)
-        # and intentionally hides step_interval_us and ir_cooldown_s (API-only).
+        # and intentionally hides technical fields (step_interval_us, ultrasonic_cooldown_s, ultrasonic_threshold_cm).
         expected_form_keys = {
             "turns_per_portion",
             "schedule_mode",
@@ -125,14 +125,27 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
         }
         form_names = set(re.findall(r'<(?:input|select)[^>]+name="([a-z0-9_]+)"', html))
         self.assertEqual(form_names, expected_form_keys)
-        self.assertNotIn("step_interval_us", html)
-        self.assertNotIn("ir_cooldown_s", html)
-        self.assertNotIn("Actualizar", html)
+        for hidden_or_stale in (
+            "step_interval_us",
+            "ultrasonic_cooldown_s",
+            "ultrasonic_threshold_cm",
+            "".join(("ir", "_cooldown_s")),
+            "".join(("ir", "_live")),
+            "".join(("ir", "_latched")),
+            "".join(("/api/mock/", "ir")),
+            "".join(("Sensor ", "IR")),
+            "Actualizar",
+        ):
+            self.assertNotIn(hidden_or_stale, html)
 
         # Layout & UX invariants
         self.assertIn("body:not(.debug-mode) .debug-only", html)
         self.assertIn('id="debug-toggle"', html)
         self.assertIn("debugToggle.checked = false", html)
+        self.assertIn('id="st-ultrasonic"', html)
+        self.assertIn('id="btn-mock-ultrasonic"', html)
+        self.assertIn("/api/mock/ultrasonic", html)
+        self.assertIn("Mascota detectada", html)
         self.assertLess(html.index('id="btn-dispense"'), html.index('role="tablist"'))
         for tab_label in (
             "Configuración de porción",
@@ -151,14 +164,15 @@ class TestApiAndWebContractStaticParity(unittest.TestCase):
         self.assertIn('<th class="debug-only">Pasos</th>', html)
         self.assertIn("!v.paused", html)
 
-        # Response fields referenced in index.html match Contract 4 + redesigned API
+        # Response fields referenced in index.html match Contract 4 + ultrasonic telemetry
         for token in (
             "data.mode",
             "data.current_action",
             "a.connected",
             "a.motor_busy",
             "a.steps_remaining",
-            "a.ir_live",
+            "a.ultrasonic_live",
+            "a.distance_cm",
             "w.next_schedule",
             "ns.mode",
             "ns.interval_minutes",
@@ -279,6 +293,8 @@ class TestApiRuntimeWithFlaskShim(unittest.TestCase):
         self.assertEqual(code, 200)
         cfg = resp.json_data["config"]
         self.assertEqual(cfg["step_interval_us"], 1000)
+        self.assertEqual(cfg["ultrasonic_cooldown_s"], 30)
+        self.assertEqual(cfg["ultrasonic_threshold_cm"], 20)
         self.assertEqual(cfg["turns_per_portion"], 1.0)
         self.assertEqual(cfg["schedule_mode"], "schedules")
 
@@ -290,15 +306,35 @@ class TestApiRuntimeWithFlaskShim(unittest.TestCase):
         self.assertEqual(resp.json_data["config"]["turns_per_portion"], 2.5)
         self.assertEqual(self.transport.manual_steps, 10240)
 
-        # POST /api/config updates step_interval_us + ir_cooldown_s and syncs Arduino
+        # POST /api/config updates step_interval_us + ultrasonic_threshold_cm + ultrasonic_cooldown_s and syncs Arduino
         code, resp = self._call(
-            "POST", "/api/config", json_body={"step_interval_us": 1500, "ir_cooldown_s": 45}
+            "POST",
+            "/api/config",
+            json_body={
+                "step_interval_us": 1500,
+                "ultrasonic_threshold_cm": 35,
+                "ultrasonic_cooldown_s": 45,
+            },
         )
         self.assertEqual(code, 200)
         self.assertTrue(resp.json_data["arduino_synced"])
         self.assertEqual(resp.json_data["config"]["step_interval_us"], 1500)
-        self.assertEqual(resp.json_data["config"]["ir_cooldown_s"], 45)
+        self.assertEqual(resp.json_data["config"]["ultrasonic_threshold_cm"], 35)
+        self.assertEqual(resp.json_data["config"]["ultrasonic_cooldown_s"], 45)
         self.assertEqual(self.transport.step_interval_us, 1500)
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, 35)
+
+        # Updating only ultrasonic_threshold_cm still syncs Arduino
+        code, resp = self._call("POST", "/api/config", json_body={"ultrasonic_threshold_cm": 50})
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.json_data["arduino_synced"])
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, 50)
+
+        # Updating only ultrasonic_cooldown_s does not force Arduino sync
+        code, resp = self._call("POST", "/api/config", json_body={"ultrasonic_cooldown_s": 60})
+        self.assertEqual(code, 200)
+        self.assertFalse(resp.json_data["arduino_synced"])
+        self.assertEqual(resp.json_data["config"]["ultrasonic_cooldown_s"], 60)
 
         # schedule_mode -> interval syncs interval_enabled and anchors last_interval_run_at
         code, resp = self._call("PUT", "/api/config", json_body={"schedule_mode": "interval"})
@@ -307,17 +343,75 @@ class TestApiRuntimeWithFlaskShim(unittest.TestCase):
         self.assertIs(resp.json_data["config"]["interval_enabled"], True)
         self.assertTrue(resp.json_data["config"]["last_interval_run_at"])
 
-        # Invalid turns_per_portion & conflict rejected with 400
+        # Invalid turns_per_portion, ultrasonic bounds & conflict rejected with 400
         for bad in (
             {"turns_per_portion": 0.25},
             {"turns_per_portion": 0},
             {"turns_per_portion": 10.5},
             {"turns_per_portion": True},
             {"turns_per_portion": 2.0, "steps_per_portion": 4096},
+            {"ultrasonic_threshold_cm": 4},
+            {"ultrasonic_threshold_cm": 201},
+            {"ultrasonic_threshold_cm": True},
+            {"ultrasonic_cooldown_s": 4},
+            {"ultrasonic_cooldown_s": 601},
         ):
             with self.subTest(bad=bad):
                 code, _ = self._call("PUT", "/api/config", json_body=bad)
                 self.assertEqual(code, 400)
+
+    def test_status_ultrasonic_telemetry_and_mock_endpoint(self) -> None:
+        # Initial status: no echo -> ultrasonic_live=False, distance_cm=None
+        code, resp = self._call("GET", "/api/status")
+        self.assertEqual(code, 200)
+        arduino = resp.json_data["arduino"]
+        self.assertTrue(arduino["connected"])
+        self.assertFalse(arduino["ultrasonic_live"])
+        self.assertIsNone(arduino["distance_cm"])
+
+        # POST /api/mock/ultrasonic with default body -> distance_cm=12
+        code, resp = self._call("POST", "/api/mock/ultrasonic", json_body={})
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.json_data["simulated"])
+        self.assertEqual(resp.json_data["distance_cm"], 12)
+
+        code, resp = self._call("GET", "/api/status")
+        self.assertEqual(code, 200)
+        self.assertTrue(resp.json_data["arduino"]["ultrasonic_live"])
+        self.assertEqual(resp.json_data["arduino"]["distance_cm"], 12)
+
+        # POST /api/mock/ultrasonic with explicit valid distance_cm
+        code, resp = self._call("POST", "/api/mock/ultrasonic", json_body={"distance_cm": 17})
+        self.assertEqual(code, 200)
+        self.assertEqual(resp.json_data["distance_cm"], 17)
+        code, resp = self._call("GET", "/api/status")
+        self.assertEqual(resp.json_data["arduino"]["distance_cm"], 17)
+
+        # Invalid distance_cm values -> 400
+        for bad_body in (
+            {"distance_cm": 1},
+            {"distance_cm": 401},
+            {"distance_cm": True},
+            {"distance_cm": "12"},
+            {"distance_cm": 12.5},
+        ):
+            with self.subTest(bad_body=bad_body):
+                code, _ = self._call("POST", "/api/mock/ultrasonic", json_body=bad_body)
+                self.assertEqual(code, 400)
+
+        # Non-mock mode -> 404
+        with mock.patch.object(type(self.client), "is_mock", new_callable=mock.PropertyMock, return_value=False):
+            code, _ = self._call("POST", "/api/mock/ultrasonic", json_body={})
+            self.assertEqual(code, 404)
+
+        # Disconnected Arduino -> 200 with connected=False, ultrasonic_live=False, distance_cm=None
+        with mock.patch.object(self.client, "get_status", side_effect=FeederI2CError("offline")):
+            code, resp = self._call("GET", "/api/status")
+            self.assertEqual(code, 200)
+            off = resp.json_data["arduino"]
+            self.assertFalse(off["connected"])
+            self.assertFalse(off["ultrasonic_live"])
+            self.assertIsNone(off["distance_cm"])
 
     def test_status_current_action_transitions(self) -> None:
         code, resp = self._call("GET", "/api/status")
@@ -393,15 +487,20 @@ class TestFlaskApiContract4(unittest.TestCase):
         self.assertEqual(body["mode"], "mock")
         self.assertEqual(body["current_action"], "En espera")
         self.assertTrue(body["arduino"]["connected"])
+        self.assertFalse(body["arduino"]["ultrasonic_live"])
+        self.assertIsNone(body["arduino"]["distance_cm"])
         self.assertEqual(body["camera"]["backend"], "mock")
         self.assertIn("server_time", body)
         self.assertIn("worker", body)
 
-        # Disconnected Arduino still returns 200 with connected=False
+        # Disconnected Arduino still returns 200 with connected=False and distance_cm=None
         with mock.patch.object(self.client, "get_status", side_effect=FeederI2CError("offline")):
             r_off = self.http.get("/api/status")
             self.assertEqual(r_off.status_code, 200)
-            self.assertFalse(r_off.get_json()["arduino"]["connected"])
+            off = r_off.get_json()["arduino"]
+            self.assertFalse(off["connected"])
+            self.assertFalse(off["ultrasonic_live"])
+            self.assertIsNone(off["distance_cm"])
 
     def test_config_get_put_and_validation(self) -> None:
         r_get = self.http.get("/api/config")
@@ -409,6 +508,8 @@ class TestFlaskApiContract4(unittest.TestCase):
         cfg0 = r_get.get_json()["config"]
         self.assertEqual(cfg0["steps_per_portion"], 4096)
         self.assertEqual(cfg0["step_interval_us"], 1000)
+        self.assertEqual(cfg0["ultrasonic_cooldown_s"], 30)
+        self.assertEqual(cfg0["ultrasonic_threshold_cm"], 20)
         self.assertEqual(cfg0["turns_per_portion"], 1.0)
         self.assertEqual(cfg0["schedule_mode"], "schedules")
 
@@ -425,24 +526,32 @@ class TestFlaskApiContract4(unittest.TestCase):
         self.assertIs(data["config"]["interval_enabled"], True)
         self.assertTrue(data["config"]["last_interval_run_at"])
 
-        # POST /api/config updates step_interval_us & ir_cooldown_s and syncs Arduino
+        # POST /api/config updates step_interval_us, ultrasonic_threshold_cm & ultrasonic_cooldown_s and syncs Arduino
         r_post = self.http.post(
-            "/api/config", json={"step_interval_us": 1500, "ir_cooldown_s": 45}
+            "/api/config",
+            json={
+                "step_interval_us": 1500,
+                "ultrasonic_threshold_cm": 35,
+                "ultrasonic_cooldown_s": 45,
+            },
         )
         self.assertEqual(r_post.status_code, 200)
         pdata = r_post.get_json()
         self.assertTrue(pdata["arduino_synced"])
         self.assertEqual(pdata["config"]["step_interval_us"], 1500)
-        self.assertEqual(pdata["config"]["ir_cooldown_s"], 45)
+        self.assertEqual(pdata["config"]["ultrasonic_threshold_cm"], 35)
+        self.assertEqual(pdata["config"]["ultrasonic_cooldown_s"], 45)
 
-        # Non-motor update does not force sync
-        r_put2 = self.http.put("/api/config", json={"ir_cooldown_s": 60})
+        # Non-Arduino update does not force sync
+        r_put2 = self.http.put("/api/config", json={"ultrasonic_cooldown_s": 60})
         self.assertEqual(r_put2.status_code, 200)
         self.assertFalse(r_put2.get_json()["arduino_synced"])
 
         # Invalid body / out of range / turns conflict -> 400
         self.assertEqual(self.http.put("/api/config", json={}).status_code, 400)
         self.assertEqual(self.http.put("/api/config", json={"steps_per_portion": 10}).status_code, 400)
+        self.assertEqual(self.http.put("/api/config", json={"ultrasonic_threshold_cm": 4}).status_code, 400)
+        self.assertEqual(self.http.put("/api/config", json={"ultrasonic_threshold_cm": 201}).status_code, 400)
         self.assertEqual(self.http.put("/api/config", json={"turns_per_portion": 0.25}).status_code, 400)
         self.assertEqual(
             self.http.put(
@@ -563,13 +672,25 @@ class TestFlaskApiContract4(unittest.TestCase):
         self.assertFalse((self.media_dir / item["filename"]).exists())
         self.assertEqual(self.http.delete(f"/api/media/{item['id']}").status_code, 404)
 
-    def test_mock_ir_endpoint_and_non_mock_404(self) -> None:
-        r_ok = self.http.post("/api/mock/ir", json={})
+    def test_mock_ultrasonic_endpoint_and_non_mock_404(self) -> None:
+        r_ok = self.http.post("/api/mock/ultrasonic", json={})
         self.assertEqual(r_ok.status_code, 200)
-        self.assertTrue(r_ok.get_json()["simulated"])
+        body = r_ok.get_json()
+        self.assertTrue(body["simulated"])
+        self.assertEqual(body["distance_cm"], 12)
+
+        r_custom = self.http.post("/api/mock/ultrasonic", json={"distance_cm": 16})
+        self.assertEqual(r_custom.status_code, 200)
+        self.assertEqual(r_custom.get_json()["distance_cm"], 16)
+        st = self.http.get("/api/status").get_json()
+        self.assertTrue(st["arduino"]["ultrasonic_live"])
+        self.assertEqual(st["arduino"]["distance_cm"], 16)
+
+        self.assertEqual(self.http.post("/api/mock/ultrasonic", json={"distance_cm": 1}).status_code, 400)
+        self.assertEqual(self.http.post("/api/mock/ultrasonic", json={"distance_cm": 401}).status_code, 400)
 
         with mock.patch.object(type(self.client), "is_mock", new_callable=mock.PropertyMock, return_value=False):
-            r_404 = self.http.post("/api/mock/ir", json={})
+            r_404 = self.http.post("/api/mock/ultrasonic", json={})
             self.assertEqual(r_404.status_code, 404)
 
 

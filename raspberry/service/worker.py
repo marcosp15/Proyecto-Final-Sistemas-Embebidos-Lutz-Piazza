@@ -1,4 +1,4 @@
-"""Hilo de fondo del dispenser: polling I2C, captura IR asíncrona y planificador de comidas."""
+"""Hilo de fondo del dispenser: polling I2C, captura ultrasónica asíncrona y planificador de comidas."""
 
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timedelta
@@ -85,7 +85,7 @@ def _elapsed_seconds(current: datetime, previous: datetime) -> float:
 
 
 class FeederWorkerThread(threading.Thread):
-    """Hilo daemon que coordina polling I2C, capturas IR asíncronas y horarios."""
+    """Hilo daemon que coordina polling I2C, capturas ultrasónicas asíncronas y horarios."""
 
     def __init__(
         self,
@@ -108,7 +108,7 @@ class FeederWorkerThread(threading.Thread):
         self._state_lock = threading.Lock()
         self._capture_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="feeder-cam")
         self._capture_future: Optional[Future] = None
-        self._last_ir_capture_mono: Optional[float] = None
+        self._last_ultrasonic_capture_mono: Optional[float] = None
 
         self._arduino_config_synced: bool = False
         self._connected: bool = False
@@ -144,17 +144,18 @@ class FeederWorkerThread(threading.Thread):
             fut.result(timeout=timeout)
 
     def run_once(self, now: Optional[datetime] = None) -> None:
-        """Ejecuta un ciclo completo: sync config, poll I2C, IR, botón manual y schedulers."""
+        """Ejecuta un ciclo completo: sync config, poll I2C, ultrasónico, botón manual y schedulers."""
         current_dt = now or self._now_fn()
         current_iso = current_dt.isoformat(timespec="seconds")
         settings = database.get_settings(self.db_path)
 
-        # 1. Sincronizar configuración de motor al iniciar o tras reconexión I2C
+        # 1. Sincronizar configuración de motor y sensor ultrasónico al iniciar o tras reconexión I2C
         if not self._arduino_config_synced:
             try:
                 self.client.set_config(
                     settings["steps_per_portion"],
                     settings["step_interval_us"],
+                    settings["ultrasonic_threshold_cm"],
                 )
                 self._arduino_config_synced = True
             except FeederI2CError as exc:
@@ -166,7 +167,7 @@ class FeederWorkerThread(threading.Thread):
                     self._last_error_msg = str(exc)
                 return
 
-        # 2. Consultar estado del Arduino consumiendo latches de IR y botón manual
+        # 2. Consultar estado del Arduino consumiendo latches del sensor ultrasónico y botón manual
         try:
             status = self.client.get_status(consume_latch=True)
         except FeederI2CError as exc:
@@ -198,9 +199,9 @@ class FeederWorkerThread(threading.Thread):
                 timestamp=current_iso,
             )
 
-        # 4. Disparar captura asíncrona por detección IR respetando cooldown
-        if status.ir_latched:
-            self._maybe_trigger_ir_capture(settings)
+        # 4. Disparar captura asíncrona por detección ultrasónica respetando cooldown
+        if status.ultrasonic_latched:
+            self._maybe_trigger_ultrasonic_capture(settings)
 
         # 5. Ejecutar planificador exclusivo según schedule_mode
         mode = settings["schedule_mode"]
@@ -209,28 +210,28 @@ class FeederWorkerThread(threading.Thread):
         elif mode == "interval":
             self._run_interval_schedule(current_dt, current_iso, settings)
 
-    def _maybe_trigger_ir_capture(self, settings: Dict[str, Any]) -> None:
-        cooldown_s = settings["ir_cooldown_s"]
+    def _maybe_trigger_ultrasonic_capture(self, settings: Dict[str, Any]) -> None:
+        cooldown_s = settings["ultrasonic_cooldown_s"]
         mono_now = self._monotonic_fn()
 
         with self._state_lock:
             if (
-                self._last_ir_capture_mono is not None
-                and (mono_now - self._last_ir_capture_mono) < cooldown_s
+                self._last_ultrasonic_capture_mono is not None
+                and (mono_now - self._last_ultrasonic_capture_mono) < cooldown_s
             ):
                 return
             if self._capture_future is not None and not self._capture_future.done():
-                logger.debug("Captura IR omitida: ya existe una captura en curso.")
+                logger.debug("Captura ultrasónica omitida: ya existe una captura en curso.")
                 return
-            self._last_ir_capture_mono = mono_now
+            self._last_ultrasonic_capture_mono = mono_now
             self._capture_future = self._capture_executor.submit(
-                self._execute_ir_capture,
+                self._execute_ultrasonic_capture,
                 settings["capture_mode"],
                 settings["video_duration_s"],
                 settings["max_media_files"],
             )
 
-    def _execute_ir_capture(
+    def _execute_ultrasonic_capture(
         self,
         capture_mode: str,
         video_duration_s: int,
@@ -238,13 +239,15 @@ class FeederWorkerThread(threading.Thread):
     ) -> None:
         try:
             if capture_mode == "video":
-                result = self.camera.capture_video(duration_s=video_duration_s, trigger="ir")
+                result = self.camera.capture_video(
+                    duration_s=video_duration_s, trigger="ultrasonic"
+                )
             else:
-                result = self.camera.capture_photo(trigger="ir")
+                result = self.camera.capture_photo(trigger="ultrasonic")
 
             database.add_media_capture(
                 self.db_path,
-                trigger="ir",
+                trigger="ultrasonic",
                 media_type=result.media_type,
                 filename=result.filename,
                 size_bytes=result.size_bytes,
@@ -255,9 +258,9 @@ class FeederWorkerThread(threading.Thread):
             if pruned:
                 self.camera.delete_files(pruned)
         except CameraBusyError:
-            logger.warning("Cámara ocupada al procesar disparo IR.")
+            logger.warning("Cámara ocupada al procesar disparo ultrasónico.")
         except (CameraError, Exception) as exc:
-            logger.error("Error durante captura IR (%s): %s", capture_mode, exc)
+            logger.error("Error durante captura ultrasónica (%s): %s", capture_mode, exc)
 
     def _execute_scheduled_dispense(
         self,

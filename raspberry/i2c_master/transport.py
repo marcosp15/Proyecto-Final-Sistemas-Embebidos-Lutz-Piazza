@@ -18,22 +18,25 @@ from .protocol import (
     DEFAULT_RX_LEN,
     DEFAULT_SLAVE_ADDR,
     DEFAULT_STEP_INTERVAL_US,
+    DEFAULT_ULTRASONIC_THRESHOLD_CM,
     DEFAULT_UNJAM_STEPS,
     ERR_BUSY,
     ERR_INVALID_ARG,
     ERR_INVALID_FRAME,
     ERR_NONE,
     ERR_UNKNOWN_CMD,
-    FLAG_IR_LATCHED,
-    FLAG_IR_LIVE,
     FLAG_MANUAL_DISPENSE_LATCHED,
     FLAG_MOTOR_BUSY,
+    FLAG_ULTRASONIC_LATCHED,
+    FLAG_ULTRASONIC_LIVE,
     MAX_ABS_STEPS,
     MAX_MANUAL_STEPS,
     MAX_STEP_INTERVAL_US,
+    MAX_ULTRASONIC_THRESHOLD_CM,
     MAX_UNJAM_STEPS,
     MIN_MANUAL_STEPS,
     MIN_STEP_INTERVAL_US,
+    MIN_ULTRASONIC_THRESHOLD_CM,
     MIN_UNJAM_STEPS,
     PROTOCOL_VERSION,
     RSP_CONFIG_ACK,
@@ -45,6 +48,7 @@ from .protocol import (
     RSP_UNJAM_ACK,
     STATUS_REQ_CONSUME_LATCH,
     STATUS_REQ_READ_ONLY,
+    ULTRASONIC_NO_ECHO_CM,
     decodificar_trama,
     empaquetar_trama,
     encode_error_payload,
@@ -176,11 +180,13 @@ class MockArduinoTransport(I2CTransportBase):
 
         self.manual_steps: int = DEFAULT_MANUAL_STEPS
         self.step_interval_us: int = DEFAULT_STEP_INTERVAL_US
+        self.ultrasonic_threshold_cm: int = DEFAULT_ULTRASONIC_THRESHOLD_CM
         self.last_error: int = ERR_NONE
 
-        self.ir_latched: bool = False
-        self.ir_live: bool = False
-        self._ir_live_until: float = 0.0
+        self.distance_cm: int = ULTRASONIC_NO_ECHO_CM
+        self.ultrasonic_latched: bool = False
+        self.ultrasonic_live: bool = False
+        self._ultrasonic_live_until: Optional[float] = None
         self.manual_dispense_latched: bool = False
 
         # Estado de movimiento del stepper (dispense normal o secuencia unjam)
@@ -196,8 +202,14 @@ class MockArduinoTransport(I2CTransportBase):
     def _update_state(self) -> None:
         now = self._clock()
 
-        if self.ir_live and self._ir_live_until > 0.0 and now >= self._ir_live_until:
-            self.ir_live = False
+        if (
+            self.ultrasonic_live
+            and self._ultrasonic_live_until is not None
+            and now >= self._ultrasonic_live_until
+        ):
+            self.ultrasonic_live = False
+            self.distance_cm = ULTRASONIC_NO_ECHO_CM
+            self._ultrasonic_live_until = None
 
         step_s = self._active_interval_us / 1_000_000.0
 
@@ -249,11 +261,16 @@ class MockArduinoTransport(I2CTransportBase):
         self._update_state()
         return self._unjam_phase != "idle" or self._steps_remaining != 0
 
-    def simulate_ir_detection(self, live_duration_s: float = 1.0) -> None:
-        """Inyecta una detección de sensor IR (activa latch y presencia en vivo temporal)."""
-        self.ir_latched = True
-        self.ir_live = True
-        self._ir_live_until = self._clock() + max(0.0, live_duration_s)
+    def simulate_ultrasonic_detection(
+        self,
+        distance_cm: int = 12,
+        live_duration_s: float = 1.0,
+    ) -> None:
+        """Inyecta una detección ultrasónica (activa latch, presencia en vivo y distancia temporal)."""
+        self.distance_cm = int(distance_cm) & 0xFFFF
+        self.ultrasonic_latched = True
+        self.ultrasonic_live = True
+        self._ultrasonic_live_until = self._clock() + max(0.0, live_duration_s)
 
     def simulate_manual_button(self) -> bool:
         """Simula pulsación del botón físico D2; dispara manual_steps si el motor está libre."""
@@ -304,18 +321,23 @@ class MockArduinoTransport(I2CTransportBase):
             flags = 0
             if self._unjam_phase != "idle" or self._steps_remaining != 0:
                 flags |= FLAG_MOTOR_BUSY
-            if self.ir_latched:
-                flags |= FLAG_IR_LATCHED
-            if self.ir_live:
-                flags |= FLAG_IR_LIVE
+            if self.ultrasonic_latched:
+                flags |= FLAG_ULTRASONIC_LATCHED
+            if self.ultrasonic_live:
+                flags |= FLAG_ULTRASONIC_LIVE
             if self.manual_dispense_latched:
                 flags |= FLAG_MANUAL_DISPENSE_LATCHED
             frame = empaquetar_trama(
                 RSP_STATUS,
-                encode_status_payload(flags, self._steps_remaining, self.last_error),
+                encode_status_payload(
+                    flags,
+                    self._steps_remaining,
+                    self.last_error,
+                    self.distance_cm,
+                ),
             )
             if req_flags & STATUS_REQ_CONSUME_LATCH:
-                self.ir_latched = False
+                self.ultrasonic_latched = False
                 self.manual_dispense_latched = False
             return frame
 
@@ -369,17 +391,24 @@ class MockArduinoTransport(I2CTransportBase):
             return empaquetar_trama(RSP_UNJAM_ACK, pack_u16(wiggle))
 
         if cmd == CMD_SET_CONFIG:
-            if len(payload) != 6:
+            if len(payload) != 8:
                 return self._error_frame(cmd, ERR_INVALID_ARG)
             manual_steps = unpack_u32(payload, 0)
             interval_us = unpack_u16(payload, 4)
-            if not (MIN_MANUAL_STEPS <= manual_steps <= MAX_MANUAL_STEPS) or not (
-                MIN_STEP_INTERVAL_US <= interval_us <= MAX_STEP_INTERVAL_US
+            threshold_cm = unpack_u16(payload, 6)
+            if (
+                not (MIN_MANUAL_STEPS <= manual_steps <= MAX_MANUAL_STEPS)
+                or not (MIN_STEP_INTERVAL_US <= interval_us <= MAX_STEP_INTERVAL_US)
+                or not (MIN_ULTRASONIC_THRESHOLD_CM <= threshold_cm <= MAX_ULTRASONIC_THRESHOLD_CM)
             ):
                 return self._error_frame(cmd, ERR_INVALID_ARG)
             self.manual_steps = manual_steps
             self.step_interval_us = interval_us
-            return empaquetar_trama(RSP_CONFIG_ACK, pack_u32(manual_steps) + pack_u16(interval_us))
+            self.ultrasonic_threshold_cm = threshold_cm
+            return empaquetar_trama(
+                RSP_CONFIG_ACK,
+                pack_u32(manual_steps) + pack_u16(interval_us) + pack_u16(threshold_cm),
+            )
 
         return self._error_frame(cmd, ERR_UNKNOWN_CMD)
 

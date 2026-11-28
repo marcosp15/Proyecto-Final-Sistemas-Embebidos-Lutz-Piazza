@@ -43,20 +43,36 @@ class TestProtocolFraming(unittest.TestCase):
             (proto.CMD_STOP_MOTOR, b""),
             (proto.CMD_UNJAM, b""),
             (proto.CMD_UNJAM, proto.pack_u16(512)),
-            (proto.CMD_SET_CONFIG, proto.pack_u32(4096) + proto.pack_u16(2000)),
+            (
+                proto.CMD_SET_CONFIG,
+                proto.pack_u32(4096) + proto.pack_u16(2000) + proto.pack_u16(25),
+            ),
             (proto.CMD_PING, b""),
             (
                 proto.RSP_STATUS,
                 proto.encode_status_payload(
-                    proto.FLAG_MOTOR_BUSY | proto.FLAG_IR_LATCHED | proto.FLAG_IR_LIVE,
+                    proto.FLAG_MOTOR_BUSY | proto.FLAG_ULTRASONIC_LATCHED | proto.FLAG_ULTRASONIC_LIVE,
                     -1024,
                     proto.ERR_NONE,
+                    distance_cm=15,
+                ),
+            ),
+            (
+                proto.RSP_STATUS,
+                proto.encode_status_payload(
+                    0,
+                    0,
+                    proto.ERR_NONE,
+                    distance_cm=None,
                 ),
             ),
             (proto.RSP_DISPENSE_ACK, proto.pack_i32(8192)),
             (proto.RSP_STOP_ACK, proto.pack_i32(1234)),
             (proto.RSP_UNJAM_ACK, proto.pack_u16(512)),
-            (proto.RSP_CONFIG_ACK, proto.pack_u32(4096) + proto.pack_u16(2000)),
+            (
+                proto.RSP_CONFIG_ACK,
+                proto.pack_u32(4096) + proto.pack_u16(2000) + proto.pack_u16(25),
+            ),
             (proto.RSP_PONG, bytes((proto.PROTOCOL_VERSION,))),
             (proto.RSP_ERROR, proto.encode_error_payload(proto.CMD_DISPENSE_STEPS, proto.ERR_BUSY)),
         ]
@@ -147,18 +163,33 @@ class TestProtocolFraming(unittest.TestCase):
         self.assertEqual(proto.unpack_u16(proto.pack_u16(10000)), 10000)
 
         flags = proto.FLAG_MOTOR_BUSY | proto.FLAG_MANUAL_DISPENSE_LATCHED
-        raw = proto.encode_status_payload(flags, -512, proto.ERR_BUSY)
+        raw = proto.encode_status_payload(flags, -512, proto.ERR_BUSY, distance_cm=18)
+        self.assertEqual(len(raw), 8)
         st = proto.decode_status_payload(raw)
         self.assertTrue(st.motor_busy)
-        self.assertFalse(st.ir_latched)
-        self.assertFalse(st.ir_live)
+        self.assertFalse(st.ultrasonic_latched)
+        self.assertFalse(st.ultrasonic_live)
         self.assertTrue(st.manual_dispense_latched)
         self.assertEqual(st.steps_remaining, -512)
         self.assertEqual(st.last_error, proto.ERR_BUSY)
+        self.assertEqual(st.distance_cm, 18)
+        self.assertEqual(st.to_dict()["distance_cm"], 18)
         self.assertEqual(st.to_dict()["last_error_name"], "ERR_BUSY")
+
+        # 0xFFFF / None encodes as ULTRASONIC_NO_ECHO_CM and decodes to None
+        raw_no_echo = proto.encode_status_payload(0, 0, proto.ERR_NONE, distance_cm=None)
+        self.assertEqual(len(raw_no_echo), 8)
+        self.assertEqual(proto.unpack_u16(raw_no_echo, 6), proto.ULTRASONIC_NO_ECHO_CM)
+        self.assertIsNone(proto.decode_status_payload(raw_no_echo).distance_cm)
+
+        raw_ffff = proto.encode_status_payload(0, 0, proto.ERR_NONE, distance_cm=proto.ULTRASONIC_NO_ECHO_CM)
+        self.assertIsNone(proto.decode_status_payload(raw_ffff).distance_cm)
 
         with self.assertRaises(ValueError):
             proto.decode_status_payload(b"\x00\x01")
+        with self.assertRaises(ValueError):
+            # Legacy 6-byte status payload must be rejected
+            proto.decode_status_payload(b"\x00\x00\x00\x00\x00\x00")
         with self.assertRaises(ValueError):
             proto.decode_error_payload(b"\x00")
 
@@ -196,8 +227,8 @@ class TestCppPythonProtocolParity(unittest.TestCase):
             "RSP_PONG": proto.RSP_PONG,
             "RSP_ERROR": proto.RSP_ERROR,
             "STATUS_MOTOR_BUSY": proto.FLAG_MOTOR_BUSY,
-            "STATUS_IR_LATCHED": proto.FLAG_IR_LATCHED,
-            "STATUS_IR_LIVE": proto.FLAG_IR_LIVE,
+            "STATUS_ULTRASONIC_LATCHED": proto.FLAG_ULTRASONIC_LATCHED,
+            "STATUS_ULTRASONIC_LIVE": proto.FLAG_ULTRASONIC_LIVE,
             "STATUS_MANUAL_DISPENSE_LATCHED": proto.FLAG_MANUAL_DISPENSE_LATCHED,
             "ERR_NONE": proto.ERR_NONE,
             "ERR_BUSY": proto.ERR_BUSY,
@@ -212,6 +243,10 @@ class TestCppPythonProtocolParity(unittest.TestCase):
             "CONFIG_MAX_MANUAL_STEPS": proto.MAX_MANUAL_STEPS,
             "CONFIG_MIN_STEP_US": proto.MIN_STEP_INTERVAL_US,
             "CONFIG_MAX_STEP_US": proto.MAX_STEP_INTERVAL_US,
+            "ULTRASONIC_NO_ECHO_CM": proto.ULTRASONIC_NO_ECHO_CM,
+            "CONFIG_DEFAULT_THRESHOLD_CM": proto.DEFAULT_ULTRASONIC_THRESHOLD_CM,
+            "CONFIG_MIN_THRESHOLD_CM": proto.MIN_ULTRASONIC_THRESHOLD_CM,
+            "CONFIG_MAX_THRESHOLD_CM": proto.MAX_ULTRASONIC_THRESHOLD_CM,
             "PROTOCOL_MAX_FRAME": proto.MAX_FRAME_BYTES,
         }
 
@@ -230,7 +265,13 @@ class TestMockTransportAndController(unittest.TestCase):
 
     def test_ping_config_dispense_busy_stop_lifecycle(self) -> None:
         self.assertEqual(self.client.ping(), proto.PROTOCOL_VERSION)
-        self.assertEqual(self.client.set_config(2048, 2000), (2048, 2000))
+        self.assertEqual(self.client.set_config(2048, 2000, 35), (2048, 2000, 35))
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, 35)
+        self.assertEqual(
+            self.client.set_config(2048, 2000),
+            (2048, 2000, proto.DEFAULT_ULTRASONIC_THRESHOLD_CM),
+        )
+        self.assertEqual(self.transport.ultrasonic_threshold_cm, proto.DEFAULT_ULTRASONIC_THRESHOLD_CM)
 
         # Dispense 1000 steps @ 2000us = 2.0s total
         self.assertEqual(self.client.dispense_steps(1000, step_interval_us=2000), 1000)
@@ -255,6 +296,8 @@ class TestMockTransportAndController(unittest.TestCase):
     def test_default_constants(self) -> None:
         self.assertEqual(proto.DEFAULT_STEP_INTERVAL_US, 1000)
         self.assertEqual(proto.STEPS_PER_REVOLUTION, 4096)
+        self.assertEqual(proto.DEFAULT_ULTRASONIC_THRESHOLD_CM, 20)
+        self.assertEqual(proto.ULTRASONIC_NO_ECHO_CM, 0xFFFF)
 
     def test_unjam_three_phase_sequence(self) -> None:
         # 100 steps @ 1000us (default) = 0.1s rev + 0.15s pause + 0.1s fwd = 0.35s total
@@ -284,30 +327,40 @@ class TestMockTransportAndController(unittest.TestCase):
         self.assertFalse(st_idle.motor_busy)
         self.assertEqual(st_idle.steps_remaining, 0)
 
-    def test_ir_and_manual_button_latches(self) -> None:
-        self.client.simulate_ir_detection(live_duration_s=1.0)
+    def test_ultrasonic_and_manual_button_latches(self) -> None:
+        st0 = self.client.get_status(consume_latch=False)
+        self.assertFalse(st0.ultrasonic_latched)
+        self.assertFalse(st0.ultrasonic_live)
+        self.assertIsNone(st0.distance_cm)
+
+        self.assertTrue(self.client.simulate_ultrasonic_detection(distance_cm=14, live_duration_s=1.0))
         self.assertTrue(self.client.simulate_manual_button())
 
-        # Read without consuming keeps latches set
+        # Read without consuming keeps latches set and exposes distance_cm
         st1 = self.client.get_status(consume_latch=False)
-        self.assertTrue(st1.ir_latched)
-        self.assertTrue(st1.ir_live)
+        self.assertTrue(st1.ultrasonic_latched)
+        self.assertTrue(st1.ultrasonic_live)
+        self.assertEqual(st1.distance_cm, 14)
         self.assertTrue(st1.manual_dispense_latched)
         self.assertTrue(st1.motor_busy)
 
-        # Consume clears latches
+        # Consume clears latches while live reading persists
         st2 = self.client.get_status(consume_latch=True)
-        self.assertTrue(st2.ir_latched)
+        self.assertTrue(st2.ultrasonic_latched)
         self.assertTrue(st2.manual_dispense_latched)
+        self.assertEqual(st2.distance_cm, 14)
 
         st3 = self.client.get_status(consume_latch=False)
-        self.assertFalse(st3.ir_latched)
+        self.assertFalse(st3.ultrasonic_latched)
         self.assertFalse(st3.manual_dispense_latched)
+        self.assertTrue(st3.ultrasonic_live)
+        self.assertEqual(st3.distance_cm, 14)
 
-        # IR live drops after live_duration_s
+        # Ultrasonic live drops and distance resets to None (0xFFFF) after live_duration_s
         self.clock.advance(1.5)
         st4 = self.client.get_status(consume_latch=False)
-        self.assertFalse(st4.ir_live)
+        self.assertFalse(st4.ultrasonic_live)
+        self.assertIsNone(st4.distance_cm)
 
     def test_protocol_errors_from_mock(self) -> None:
         # Unknown command
@@ -338,10 +391,28 @@ class TestMockTransportAndController(unittest.TestCase):
             self.client.unjam(10)
         with self.assertRaises(ValueError):
             self.client.set_config(100, 2000)
+        with self.assertRaises(ValueError):
+            self.client.set_config(4096, 2000, 4)
+        with self.assertRaises(ValueError):
+            self.client.set_config(4096, 2000, 201)
+        with self.assertRaises(ValueError):
+            self.client.set_config(4096, 2000, True)  # type: ignore[arg-type]
 
-        # Protocol-level invalid arg raised as FeederInvalidArgError
+        # Protocol-level invalid arg raised as FeederInvalidArgError (including legacy 6B CMD_SET_CONFIG)
         with self.assertRaises(FeederInvalidArgError):
             self.master._send_command(proto.CMD_DISPENSE_STEPS, proto.pack_i32(0), proto.RSP_DISPENSE_ACK)
+        with self.assertRaises(FeederInvalidArgError):
+            self.master._send_command(
+                proto.CMD_SET_CONFIG,
+                proto.pack_u32(4096) + proto.pack_u16(2000),
+                proto.RSP_CONFIG_ACK,
+            )
+        with self.assertRaises(FeederInvalidArgError):
+            self.master._send_command(
+                proto.CMD_SET_CONFIG,
+                proto.pack_u32(4096) + proto.pack_u16(2000) + proto.pack_u16(201),
+                proto.RSP_CONFIG_ACK,
+            )
         with self.assertRaises(FeederProtocolError):
             self.master._send_command(0x55, b"", proto.RSP_PONG)
 

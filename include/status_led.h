@@ -6,7 +6,7 @@
 typedef enum : uint8_t {
     STATUS_LED_IDLE = 0,
     STATUS_LED_MOTOR_BUSY = 1,
-    STATUS_LED_IR_ACTIVE = 2
+    STATUS_LED_ULTRASONIC_ACTIVE = 2
 } status_led_mode_t;
 
 void status_led_init(void);

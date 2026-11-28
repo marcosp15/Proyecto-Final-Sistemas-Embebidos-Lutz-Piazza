@@ -5,10 +5,18 @@ from typing import Optional, Tuple
 
 try:
     from i2c_master.controller import FeederMaster
-    from i2c_master.protocol import DEFAULT_UNJAM_STEPS, StatusData
+    from i2c_master.protocol import (
+        DEFAULT_ULTRASONIC_THRESHOLD_CM,
+        DEFAULT_UNJAM_STEPS,
+        StatusData,
+    )
 except ImportError:
     from ..i2c_master.controller import FeederMaster
-    from ..i2c_master.protocol import DEFAULT_UNJAM_STEPS, StatusData
+    from ..i2c_master.protocol import (
+        DEFAULT_ULTRASONIC_THRESHOLD_CM,
+        DEFAULT_UNJAM_STEPS,
+        StatusData,
+    )
 
 
 class ThreadSafeFeederMaster:
@@ -54,13 +62,29 @@ class ThreadSafeFeederMaster:
         with self._lock:
             return self._master.unjam(wiggle_steps=wiggle_steps)
 
-    def set_config(self, manual_steps: int, step_interval_us: int) -> Tuple[int, int]:
+    def set_config(
+        self,
+        manual_steps: int,
+        step_interval_us: int,
+        ultrasonic_threshold_cm: int = DEFAULT_ULTRASONIC_THRESHOLD_CM,
+    ) -> Tuple[int, int, int]:
         with self._lock:
-            return self._master.set_config(manual_steps, step_interval_us)
+            return self._master.set_config(
+                manual_steps,
+                step_interval_us,
+                ultrasonic_threshold_cm=ultrasonic_threshold_cm,
+            )
 
-    def simulate_ir_detection(self, live_duration_s: float = 1.0) -> bool:
+    def simulate_ultrasonic_detection(
+        self,
+        distance_cm: int = 12,
+        live_duration_s: float = 1.0,
+    ) -> bool:
         with self._lock:
-            return self._master.simulate_ir_detection(live_duration_s=live_duration_s)
+            return self._master.simulate_ultrasonic_detection(
+                distance_cm=distance_cm,
+                live_duration_s=live_duration_s,
+            )
 
     def simulate_manual_button(self) -> bool:
         with self._lock:
